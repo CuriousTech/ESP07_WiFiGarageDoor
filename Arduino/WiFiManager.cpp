@@ -89,7 +89,9 @@ String WiFiManager::getEEPROMString(int start, int len) {
     String string = "";
     for (int i = _eepromStart + start; i < _eepromStart + start + len; i++) {
         //DEBUG_PRINT(i);
-        string += char(EEPROM.read(i));
+        char c = char(EEPROM.read(i));
+        if(c == 0) break; // fix for 2.0.0
+        string += c;
     }
     return string;
 }
@@ -350,7 +352,7 @@ boolean WiFiManager::findOpenAP(const char *szUrl)
         display.print("No APs Found");
     }
     else {
-        for (int i = 0; i < nScan; ++i) // try each public AP
+        for (int i = 0; i < nScan; ++i) // Print each AP, count public ones
         {
             Serial.print(WiFi.SSID(i));
             Serial.print(" ");
@@ -361,7 +363,7 @@ boolean WiFiManager::findOpenAP(const char *szUrl)
               display.drawString(128-8, 56, "O");
               nOpen++;
             }
-            else if( sSSID == WiFi.SSID(i) ){ // The saved WiFi was found
+            else if( sSSID == WiFi.SSID(i) ){ // The saved AP was found
               bFound  = true;
               display.drawString(128-8, 56, "<");
               Serial.println(" Cfg AP found");
@@ -396,7 +398,9 @@ boolean WiFiManager::findOpenAP(const char *szUrl)
         Serial.print("Attempting ");
         Serial.print(WiFi.SSID(i));
         display.print(String(WiFi.SSID(i)) + "...");
-        WiFi.begin(WiFi.SSID(i));
+        char szSSID[64];
+        WiFi.SSID(i).toCharArray(szSSID, 64);
+        WiFi.begin(szSSID);
         for(int n = 0; n < 50 && WiFi.status() != WL_CONNECTED; n++)
         {
           delay(200);
@@ -429,8 +433,8 @@ boolean WiFiManager::findOpenAP(const char *szUrl)
     if (WiFi.status() != WL_CONNECTED)
     {
       Serial.println("Open WiFi failed");
-      Serial.println("Switch to SoftAP");
       display.print("Open WiFi failed");
+      Serial.println("Switch to SoftAP");
       display.print("Switch to SoftAP");
       autoConnect("ESP8266");
     }
