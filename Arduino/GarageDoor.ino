@@ -52,10 +52,11 @@ extern "C" {
   #include "user_interface.h" // Needed for deepSleep which isn't used
 }
 
-#define ESP_LED    2
+#define TOP_ACC    0  // direct pin on remote header (not used)
+#define ESP_LED    2  // low turns on ESP blue LED
 #define HEARTBEAT  2
-#define LED       13
-#define DIG_IN    12
+#define ACC       13  // the divider to the bottom corner pin
+#define DIG_IN    12  // the direct pin (bootm 3 pin header)
 #define RANGE_2   14
 #define REMOTE    15
 #define RANGE_1   16
@@ -75,22 +76,30 @@ int httpPort = 80; // may be modified by open AP scan
 
 struct eeSet // EEPROM backed data
 {
+  uint16_t size;          // if size changes, use defauls
+  uint16_t sum;           // if sum is diiferent from memory struct, write
   char     dataServer[64];
   uint8_t  dataServerPort; // may be modified by listener (dataHost)
   int8_t   tz;            // Timezone offset from your server
   uint16_t interval;
   uint16_t nCarThresh;
   uint16_t nDoorThresh;
-  uint16_t check; // or CRC
+  uint16_t alarmTimeout;
 };
-        // dsrv, prt, tz, 5mins
-eeSet ee = { "", 80,  1, 5*60, 700, 700, 0xAAAA};
+eeSet ee = { sizeof(eeSet), 0xAAAA,
+  "192.168.0.189", 83,  2, 10*60, // dataServer, port, TZ, interval
+  500, 500,
+  5*60          // alarmTimeout
+};
 
 uint8_t hour_save, sec_save;
 int ee_sum; // sum for checking if any setting has changed
 bool bDoorOpen;
 bool bCarIn;
 int logCounter;
+uint16_t doorVal;
+uint16_t carVal;
+uint16_t doorOpenTimer;
 
 String ipString(long l)
 {
@@ -108,12 +117,12 @@ String ipString(long l)
 
 void handleRoot() // Main webpage interface
 {
-  digitalWrite(LED, LOW);
   char temp[100];
   String password;
   int val;
   bool bUpdateTime = false;
   bool bRemote = false;
+  bool ipSet = false;
   eeSet save;
   memcpy(&save, &ee, sizeof(ee));
 
@@ -134,7 +143,10 @@ void handleRoot() // Main webpage interface
           ee.tz = s.toInt();
           bUpdateTime = true; // refresh current time
           break;
-      case 'i': // ?ip=server&port=80&int=60&key=password (htTp://192.168.0.197:84/s?ip=192.168.0.189&port=81&int=300&key=password)
+      case 'T': // alarm timeout
+          ee.alarmTimeout = s.toInt();
+          break;
+      case 'i': // ?ip=server&port=80&int=60&key=password (htTp://192.168.0.197:84/s?ip=192.168.0.189&port=83&int=300&Timeout=600&key=password)
           if(which) // interval
           {
             ee.interval = s.toInt();
@@ -144,6 +156,7 @@ void handleRoot() // Main webpage interface
             s.toCharArray(ee.dataServer, 64); // todo: parse into domain/URI
             Serial.print("Server ");
             Serial.println(ee.dataServer);
+            ipSet = true;
            }
            break;
       case 'L':
@@ -185,55 +198,65 @@ void handleRoot() // Main webpage interface
   if(server.args() && (password != controlPassword) )
   {
     memcpy(&ee, &save, sizeof(ee)); // undo any changes
-    if(nWrongPass < 4)
-      nWrongPass = 4;
-    else if((nWrongPass & 0xFFFFF000) == 0 ) // time doubles for every wrong password attempt.  Max 1 hour
+    if(nWrongPass == 0) // it takes at least 10 seconds to recognize a wrong password
+      nWrongPass = 10;
+    else if((nWrongPass & 0xFFFFF000) == 0 ) // time doubles for every high speed wrong password attempt.  Max 1 hour
       nWrongPass <<= 1;
     if(ip != lastIP)  // if different IP drop it down
-       nWrongPass = 4;
+       nWrongPass = 10;
     ctSendIP(false, ip); // log attempts
     bRemote = false;
   }
   lastIP = ip;
 
-  String page = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>"
+  if(ipSet) // if data IP being set, return local IP
+  {
+    String page = "{\"ip\": \"";
+    page += ipString(WiFi.localIP());
+    page += ":";
+    page += serverPort;
+    page += "\"}";
+    server.send ( 200, "text/json", page );
+  }
+  else
+  {
+    String page = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>"
           "<title>WiFi Garage Door Opener</title>";
-  page += "<style>div,input {margin-bottom: 5px;}body{width:260px;display:block;margin-left:auto;margin-right:auto;text-align:right;font-family: Arial, Helvetica, sans-serif;}}</style>";
-  page += "<body onload=\"{"
+    page += "<style>div,input {margin-bottom: 5px;}body{width:260px;display:block;margin-left:auto;margin-right:auto;text-align:right;font-family: Arial, Helvetica, sans-serif;}}</style>";
+    page += "<body onload=\"{"
       "key = localStorage.getItem('key'); if(key!=null) document.getElementById('myKey').value = key;"
       "for(i=0;i<document.forms.length;i++) document.forms[i].elements['key'].value = key;"
       "}\">";
 
-  page += "<h3>WiFi Garage Door Opener </h3>";
-  page += "<p>" + timeFmt(true, true);
-  page += "</p>";
+    page += "<h3>WiFi Garage Door Opener </h3>";
+    page += "<p>" + timeFmt(true, true);
+    page += "</p>";
   
-  page += "<table align=\"right\"><tr><td align=\"right\">Garage</td>";
-  page += "<td align=\"center\">";
-  page += bDoorOpen ? "<font color=\"red\"><b>OPEN</b></font>" : "<b>CLOSED</b>";
-  page += "</td></tr>";
-  page += "<tr><td align=\"right\">Car</td>";
-  page += "<td align=\"center\">";
-  page += bCarIn ? "<b>IN</b>" : "<font color=\"red\"><b>OUT</b></font>";
-  page += "</td></tr>";
-  page += "<tr><td colspan=2 align=\"center\">";
-  page += button("D", bDoorOpen ? "Close":"Open"); page += "</td>";
-  page += "</tr><tr><td></td><td align=\"center\">Timezone</td></tr>";
-  page += "<tr><td>";
-  page += "</td><td>";  page += valButton("Z", String(ee.tz) );
-  page += "</td></tr></table>";
+    page += "<table align=\"right\"><tr><td align=\"right\">Garage</td>";
+    page += "<td align=\"center\">";
+    page += bDoorOpen ? "<font color=\"red\"><b>OPEN</b></font>" : "<b>CLOSED</b>";
+    page += "</td></tr>";
+    page += "<tr><td align=\"right\">Car</td>";
+    page += "<td align=\"center\">";
+    page += bCarIn ? "<b>IN</b>" : "<font color=\"red\"><b>OUT</b></font>";
+    page += "</td></tr>";
+    page += "<tr><td colspan=2 align=\"center\">";
+    page += button("D", bDoorOpen ? "Close":"Open"); page += "</td>";
+    page += "</tr><tr><td></td><td align=\"center\">Timezone</td></tr>";
+    page += "<tr><td>";
+    page += "</td><td>";  page += valButton("Z", String(ee.tz) );
+    page += "</td></tr></table>";
 
-  page += "<input id=\"myKey\" name=\"key\" type=text size=50 placeholder=\"password\" style=\"width: 150px\">";
-  page += "<input type=\"button\" value=\"Save\" onClick=\"{localStorage.setItem('key', key = document.all.myKey.value)}\">";
-  page += "<br>Logged IP: ";
-  page += ipString(ip);
-  page += "<br></body></html>";
+    page += "<input id=\"myKey\" name=\"key\" type=text size=50 placeholder=\"password\" style=\"width: 150px\">";
+    page += "<input type=\"button\" value=\"Save\" onClick=\"{localStorage.setItem('key', key = document.all.myKey.value)}\">";
+    page += "<br>Logged IP: ";
+    page += ipString(ip);
+    page += "<br></body></html>";
 
-  server.send ( 200, "text/html", page );
-
+    server.send ( 200, "text/html", page );
+  }
   if(bUpdateTime)
     ctSetIp();
-  digitalWrite(LED, HIGH);
   if(bRemote)
      pulseRemote();
 }
@@ -292,12 +315,26 @@ void handleS() { // /s?x=y can be redirected to index
   handleRoot();
 }
 
-// Todo: JSON I/O
+// JSON format for initial or full data read
 void handleJson()
 {
-  String page = "OK";
-  
-  server.send ( 200, "text/html", page );
+  String page = "{\"carThresh\": ";
+  page += ee.nCarThresh;
+  page += ", \"doorThresh\": ";
+  page += ee.nDoorThresh;
+  page += ", \"carVal\": ";
+  page += carVal;         // use value to check for what your threshold should be
+  page += ", \"doorVal\": ";
+  page += doorVal;
+  page += ", \"doorOpen\": ";
+  page += bDoorOpen;
+  page += ", \"carIn\": ";
+  page += bCarIn;
+  page += ", \"alarmTimeout\": ";
+  page += ee.alarmTimeout;
+  page += "}";
+
+  server.send ( 200, "text/json", page );
 }
 
 void handleNotFound() {
@@ -319,17 +356,14 @@ void handleNotFound() {
 
 void setup()
 {
-  pinMode(LED, OUTPUT);
-  pinMode(HEARTBEAT, OUTPUT);
-  digitalWrite(HEARTBEAT, LOW);
-
-  pinMode(REMOTE, OUTPUT);
-  digitalWrite(REMOTE, LOW);
-
   pinMode(RANGE_1, OUTPUT);
   pinMode(RANGE_2, OUTPUT);
-  digitalWrite(RANGE_1, LOW);
+  digitalWrite(RANGE_1, LOW); // LOW = off (do not turn both on at the same time)
   digitalWrite(RANGE_2, LOW);
+  pinMode(REMOTE, OUTPUT);
+  pinMode(HEARTBEAT, OUTPUT);
+  digitalWrite(REMOTE, HIGH); // watchdog disabled (in case of config)
+  digitalWrite(HEARTBEAT, LOW);
 
   // initialize dispaly
   display.init();
@@ -364,8 +398,13 @@ void setup()
   server.onNotFound ( handleNotFound );
   server.begin();
 
-  logCounter = 60;
-  digitalWrite(HEARTBEAT, LOW);
+  digitalWrite(REMOTE, LOW); // beep
+  digitalWrite(REMOTE, HIGH); // this gets past the initial wait
+  digitalWrite(REMOTE, LOW); // enable watchdog
+
+  logCounter = 20;
+  digitalWrite(HEARTBEAT, HIGH);
+
   ctSendIP(true, WiFi.localIP());
 
   digitalWrite(RANGE_2, LOW);   // enable ADC 1
@@ -374,41 +413,58 @@ void setup()
 
 void loop()
 {
-  static int8_t cnt = 0;
-  int v;
- 
+  static uint8_t tog = 0;
+#define ANA_AVG 20
+  static uint16_t vals[2][ANA_AVG];
+  static uint8_t ind[2];
+  bool bSkip = false;
+
   mdns.update();
   server.handleClient();
 
-  if(sec_save != second()) // only do stuff once per second
+  if(sec_save != second()) // only do stuff once per second (loop is maybe 20-30 Hz)
   {
     sec_save = second();
 
-    switch(cnt)
+//    int n = tween(830, 820, 285, 360);
+//    Serial.print(n);
+    
+    bSkip = true; // skip first read (needs time to start)
+    switch(tog)
     {
-      case 0:
-        digitalWrite(RANGE_2, LOW);   // enable ADC 1
-        digitalWrite(RANGE_1, HIGH);
-        break;
-      case 1: // read 1
-        v = analogRead(A0);
-        bDoorOpen = (v < ee.nDoorThresh) ? false:true;
-//        Serial.print("Ana1: ");
-//        Serial.println(v);
-        break;
-      case 2:
+      case 0: // read 1 (middle header)
+        doorVal = 0;
+        for(int i = 0; i < ANA_AVG; i++)
+          doorVal += vals[0][i];
+        doorVal /= ANA_AVG;
+        bool bNew;
+        bNew = (doorVal > ee.nDoorThresh) ? true:false;
+        if(bNew != bDoorOpen)
+        {
+            bDoorOpen = bNew;
+            doorOpenTimer = bDoorOpen ? ee.alarmTimeout : 0;
+            ctSendLog(false); // send all changes in door status
+        }
+//        Serial.print("Door: ");
+//        Serial.println(doorVal);
         digitalWrite(RANGE_1, LOW);   // enable ADC 2
         digitalWrite(RANGE_2, HIGH);
+        tog = 1; // toogle ana after averaging
         break;
-      case 3: // read 2
-        v = analogRead(A0);
-        bCarIn = (v < ee.nCarThresh) ? true:false;
-//        Serial.print("Ana2: ");
-//        Serial.println(v);
+      case 1: // read 2 (right header)
+        carVal = 0;
+        for(int i = 0; i < ANA_AVG; i++)
+          carVal += vals[1][i];
+        carVal /= ANA_AVG;
+        bCarIn = (carVal < ee.nCarThresh) ? true:false;
+//        Serial.print("Car: ");
+//        Serial.println(carVal);
+        digitalWrite(RANGE_2, LOW);   // enable ADC 1
+        digitalWrite(RANGE_1, HIGH);
+        tog = 0;
         break;
     }
-    if(++cnt > 3) cnt = 0;
- 
+
     if (hour_save != hour()) // update our IP and time daily (at 2AM for DST)
     {
       display.init();
@@ -428,13 +484,28 @@ void loop()
       if(--logCounter == 0)
       {
         logCounter = ee.interval;
-        ctSendLog();
+        ctSendLog(false); // no really needed, but as a heartbeat
         eeWrite(); // update EEPROM if needed while we're at it (give user time to make many adjustments)
+      }
+    }
+
+    if(doorOpenTimer)
+    {
+      if(--doorOpenTimer == 0)
+      {
+        ctSendLog(true); // Send to server as alert so it can send a Pushbullet
       }
     }
     digitalWrite(HEARTBEAT, !digitalRead(HEARTBEAT));
   }
+
   DrawScreen();
+
+  if(!bSkip)
+  {
+    vals[tog][ind[tog]] = analogRead(A0); // read current IR sensor value into current circle buf
+    if(++ind[tog] >= ANA_AVG) ind[tog] = 0;
+  }
 }
 
 int16_t ind;
@@ -444,13 +515,13 @@ void DrawScreen()
   // draw the screen here
   display.clear();
 
-  if(bDisplay_on) // draw only ON indicator if screen off
+  if(bDisplay_on)
   {
     display.setFontScale2x2(false);
     display.drawString( 8, 22, "Door");
     display.drawString(80, 22, "Car");
 
-//  display.setFontScale2x2(true);
+    display.setFontScale2x2(true);
 
     String s = timeFmt(true, true);
     s += "  ";
@@ -468,38 +539,40 @@ void DrawScreen()
 
     display.drawPropString( 2, 34, bDoorOpen ? "Open":"Closed" );
     display.drawPropString(80, 34, bCarIn ? "In":"Out" );
-
   }
   display.display();
 }
 
 void pulseRemote()
 {
-  digitalWrite(REMOTE, LOW);
+  digitalWrite(REMOTE, HIGH);
   delay(200);
-  digitalWrite(REMOTE, HIGH);  
+  digitalWrite(REMOTE, LOW);
 }
 
 void eeWrite() // write the settings if changed
 {
-  uint16_t sum = Fletcher16((uint8_t *)&ee, sizeof(eeSet));
+  uint16_t old_sum = ee.sum;
+  ee.sum = 0;
+  ee.sum = Fletcher16((uint8_t *)&ee, sizeof(eeSet));
 
-  if(sum == ee_sum){
+  if(old_sum == ee.sum)
     return; // Nothing has changed?
-  }
-  ee_sum = sum;
+
   wifi.eeWriteData(64, (uint8_t*)&ee, sizeof(ee)); // WiFiManager already has an instance open, so use that at offset 64+
 }
 
 void eeRead()
 {
-  uint8_t addr = 64;
   eeSet eeTest;
 
   wifi.eeReadData(64, (uint8_t*)&eeTest, sizeof(eeSet));
-  if(eeTest.check != 0xAAAA) return; // Probably only the first read or if struct size changes
+  if(eeTest.size != sizeof(eeSet)) return; // revert to defaults if struct size changes
+  uint16_t sum = eeTest.sum;
+  eeTest.sum = 0;
+  eeTest.sum = Fletcher16((uint8_t *)&eeTest, sizeof(eeSet));
+  if(eeTest.sum != sum) return; // revert to defaults if sum fails
   memcpy(&ee, &eeTest, sizeof(eeSet));
-  ee_sum = Fletcher16((uint8_t *)&ee, sizeof(eeSet));
 }
 
 uint16_t Fletcher16( uint8_t* data, int count)
@@ -517,12 +590,14 @@ uint16_t Fletcher16( uint8_t* data, int count)
 }
 
 // Send logging data to a server.  This sends JSON formatted data to my local PC, but change to anything needed.
-void ctSendLog()
+void ctSendLog(bool bAlert)
 {
   String url = "/s?gdoLog={\"door\": ";
   url += bDoorOpen;
   url += ", \"car\": ";
   url += bCarIn;
+  url += ", \"alert\": ";
+  url += bAlert;
   url += "}";
   ctSend(url);
 }
@@ -532,6 +607,12 @@ void ctSendIP(bool local, uint32_t ip)
 {
   String s = local ? "/s?gdoIP=\"" : "/s?gdoHackIP=\"";
   s += ipString(ip);
+
+  if(local)
+  {
+    s += ":";
+    s += serverPort;
+  }
   s += "\"";
 
   ctSend(s);
@@ -544,6 +625,8 @@ void ctSend(String s)
   WiFiClient client;
   if (!client.connect(ee.dataServer, ee.dataServerPort)) {
     Serial.println("dataServer connection failed");
+    Serial.println(ee.dataServer);
+    Serial.println(ee.dataServerPort);
     delay(100);
     return;
   }
