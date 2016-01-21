@@ -135,7 +135,7 @@ struct FONT_INFO
 {
   unsigned char height;
   unsigned char start_ch;
-//  unsigned char end_ch;
+  unsigned char end_ch;
   unsigned char space_width;
   const FONT_CHAR_INFO *pInfo;
   const unsigned char *pBitmaps;
@@ -2526,7 +2526,7 @@ const unsigned char crystalclear_14ptBitmaps[] PROGMEM =
 
 // Character descriptors for Crystal clear 14pt
 // { [Char width in bits], [Offset into crystalclear_14ptCharBitmaps in bytes] }
-const FONT_CHAR_INFO crystalclear_14ptDescriptors[] PROGMEM = 
+const FONT_CHAR_INFO crystalclear_14ptDescriptors[] = 
 {
   {2, 0},     // ! 
   {4, 23},    // " 
@@ -2543,17 +2543,17 @@ const FONT_CHAR_INFO crystalclear_14ptDescriptors[] PROGMEM =
   {6, 368},     // - 
   {2, 391},     // . 
   {11, 414},    // / 
-  {9, 460},     // 0 
-  {5, 506},     // 1 
+  {12, 460},     // 0 
+  {8, 506},     // 1 
   {12, 529},    // 2 
-  {10, 575},    // 3 
+  {12, 575},    // 3 
   {12, 621},    // 4 
   {12, 667},    // 5 
   {12, 713},    // 6 
   {12, 759},    // 7 
   {12, 805},    // 8 
   {12, 851},    // 9 
-  {2, 897},     // : 
+  {4, 897},     // : 
   {2, 920},     // ; 
   {7, 943},     // < 
   {7, 966},     // = 
@@ -2589,6 +2589,7 @@ const FONT_CHAR_INFO crystalclear_14ptDescriptors[] PROGMEM =
   {5, 2323},    // [ 
   {11, 2346},     // \ 
   {5, 2392},    // ] 
+  {6, 3680},    // ° 
   {8, 2415},    // ^ 
   {7, 2438},    // _ 
   {4, 2461},    // ` 
@@ -2622,7 +2623,6 @@ const FONT_CHAR_INFO crystalclear_14ptDescriptors[] PROGMEM =
   {2, 3588},    // | 
   {6, 3611},    // } 
   {10, 3634},     // ~ 
-  {6, 3680},    // ° (manually moved)
   {0, 0},     //  
   {0, 0},     //  
   {0, 0},     //  
@@ -2679,8 +2679,8 @@ const FONT_INFO crystalclear_14ptFontInfo =
 {
   23, //  Character height (manually changed)
   '!', //  Start character
-//  '°', //  End character (not used but deg causes error)
-  2, //  Width, in pixels, of space character
+  'x', //  End character (not used but deg causes error)
+  3, //  Width, in pixels, of space character
   crystalclear_14ptDescriptors, //  Character descriptor array
   crystalclear_14ptBitmaps, //  Character bitmap array
 };
