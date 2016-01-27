@@ -271,10 +271,8 @@ void SSD1306::sendInitCommands(void)
   sendCommand(0x20);        //MEMORYMODE
   sendCommand(0x00);        //0x0 act like ks0108
   
-  //sendCommand(0xA0 | 0x1);//SEGREMAP   //Rotate screen 180 deg
   sendCommand(0xA0);
   
-  //sendCommand(0xC8);      //COMSCANDEC  Rotate screen 180 Deg
   sendCommand(0xC0);
   sendCommand(0xDA);        //0xDA
   sendCommand(0x12);        //COMSCANDEC
@@ -288,45 +286,10 @@ void SSD1306::sendInitCommands(void)
   sendCommand(0xA6);        //NORMALDISPLAY
 
   sendCommand(0x2e);        // stop scroll
-  sendCommand(0xc8);
   //----------------------------REVERSE comments----------------------------//
-    sendCommand(0xa0);	  	//seg re-map 0->127(default)
-    sendCommand(0xa1);	  	//seg re-map 127->0
-
-    sendCommand(0xa3);      // Clear scroll area
-    sendCommand(0);
-    sendCommand(64);
-
-
-    sendCommand(0x26);  // Clear all scroll registers 0x27-0x29
-    sendCommand(0);
-    sendCommand(0);
-    sendCommand(0);
-    sendCommand(0);
-    sendCommand(0);
-    sendCommand(0xFF);
-    
-    sendCommand(0x27);
-    sendCommand(0);
-    sendCommand(0);
-    sendCommand(0);
-    sendCommand(0);
-    sendCommand(0);
-    sendCommand(0xFF);
-
-    sendCommand(0x28);
-    sendCommand(0);
-    sendCommand(0);
-    sendCommand(0);
-    sendCommand(0);
-    sendCommand(0);
-
-    sendCommand(0x29);
-    sendCommand(0);
-    sendCommand(0);
-    sendCommand(0);
-    sendCommand(0);
-    sendCommand(0);
+//  sendCommand(0xc8);        // flip
+//    sendCommand(0xa0);	  	//seg re-map 0->127(default)
+//    sendCommand(0xa1);	  	//seg re-map 127->0
 
     delay(100);
   //----------------------------REVERSE comments----------------------------//
