@@ -33,11 +33,10 @@ SOFTWARE.
 #include "WiFiManager.h"
 #include <ESP8266WebServer.h>
 
-#define USEPIC // For PIC control
 const char *controlPassword = "password"; // device password for modifying any settings
 const char *serverFile = "GarageDoor";    // Creates /iot/GarageDoor.php
 int serverPort = 84;                    // port fwd for fwdip.php
-const char *myHost = "www.yourdomain.com"; // php forwarding/time server
+const char *myHost = "www.yourdomian.com"; // php forwarding/time server
 
 union ip4
 {
@@ -85,11 +84,13 @@ struct eeSet // EEPROM backed data
   uint16_t nCarThresh;
   uint16_t nDoorThresh;
   uint16_t alarmTimeout;
+  uint16_t closeTimeout;  // Set longer than it takes to close the door  /?C=30 (Todo: Text input needs to be added to the page)
 };
 eeSet ee = { sizeof(eeSet), 0xAAAA,
   "192.168.0.189", 83,  2, 10*60, // dataServer, port, TZ, interval
   500, 500,
-  5*60          // alarmTimeout
+  5*60,          // alarmTimeout
+  30            // closeTimeout
 };
 
 uint8_t hour_save, sec_save;
@@ -142,6 +143,9 @@ void handleRoot() // Main webpage interface
       case 'Z': // TZ
           ee.tz = s.toInt();
           bUpdateTime = true; // refresh current time
+          break;
+      case 'C': // close timeout (set a bit higher than it takes to close)
+          ee.closeTimeout = s.toInt();
           break;
       case 'T': // alarm timeout
           ee.alarmTimeout = s.toInt();
@@ -398,8 +402,6 @@ void setup()
   server.onNotFound ( handleNotFound );
   server.begin();
 
-  digitalWrite(REMOTE, LOW); // beep
-  digitalWrite(REMOTE, HIGH); // this gets past the initial wait
   digitalWrite(REMOTE, LOW); // enable watchdog
 
   logCounter = 20;
@@ -545,8 +547,12 @@ void DrawScreen()
 
 void pulseRemote()
 {
+  if(bDoorOpen == false) // closing door
+  {
+    doorOpenTimer = ee.closeTimeout; // set the short timeout 
+  }
   digitalWrite(REMOTE, HIGH);
-  delay(200);
+  delay(100);
   digitalWrite(REMOTE, LOW);
 }
 
