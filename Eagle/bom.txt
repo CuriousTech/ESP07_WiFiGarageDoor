@@ -5,11 +5,11 @@ Watchdog		10F320
 R1-R3, R9, R10	10K 0806
 R4				1K 0805
 R5				5K6 (divider)
-R6				4K7 (Convert Sharp sensors 2.8V to 1.0x)
+R6				4K7 (Convert Sharp sensors 2.8V to 1.0V)
 R7,R8			(future use - direct or divide for digital in or out)
 C1-C3			0.1uF 0805
 C4				1uF 0805
-Q1,Q4,Q5		P-Channel SOT-23 PMV33UVE215
-Q2-Q3			NPN SOT-23
+Q4,Q5     P-Channel SOT-23 PMV33UVE215
+Q1-Q3			NPN SOT-23
 USB				FCI 10118193-0001LF
 0.1" heade		16 pins needed
