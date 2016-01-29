@@ -11,3 +11,5 @@ Rev 2: The output has been changed from a P-Channel to a simple NPN since the PI
   
   
 Here's [a small case](http://www.allelectronics.com/make-a-store/item/mbu-906/utility-case-2.74-x-1.99-x-0.83/1.html) that it fits nicely in.
+  
+![UI](http://www.curioustech.net/images/gdo_ui.png)  
