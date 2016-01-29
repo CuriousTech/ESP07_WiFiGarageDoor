@@ -116,7 +116,7 @@ void main(void)
 		if(click)	// remote from the ESP
 		{
 			timer = TIMEOUT;	// restart every 5 minutes if nothing happens
-			REMOTE_OUT = 0;		// pulse the reset
+			REMOTE_OUT = 1;		// pulse the remote
 			TRISAbits.TRISA0 = 0; // using open collector, bypassing transistor
 			__delay_ms(1000);
 			TRISAbits.TRISA0 = 1;
