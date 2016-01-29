@@ -4723,7 +4723,6 @@ at 30/07/2012 11:22:31</description>
 <part name="GND1" library="supply1" deviceset="GND" device=""/>
 <part name="." library="SparkFun-Connectors" deviceset="M02" device="PTH"/>
 <part name="C1" library="SparkFun-Capacitors" deviceset="CAP" device="" value="0.1uF"/>
-<part name="Q1" library="SparkFun-DiscreteSemi" deviceset="TRANSISTOR_PNP" device="SMD" value="P-FET"/>
 <part name="U$3" library="CuriousTech" deviceset="SMD-PAD1" device=""/>
 <part name="10F320" library="Microchip_By_element14_Batch_1" deviceset="PIC10F220T-I/OT" device="" value="PIC10F320T-I/OT"/>
 <part name="R7" library="SparkFun-Resistors" deviceset="RESISTOR" device="0805-RES" value="330"/>
@@ -4744,10 +4743,10 @@ at 30/07/2012 11:22:31</description>
 <part name="GND14" library="supply1" deviceset="GND" device=""/>
 <part name="JP4" library="SparkFun-Connectors" deviceset="M03" device="POLAR"/>
 <part name="GND3" library="supply1" deviceset="GND" device=""/>
-<part name="R4" library="SparkFun-Resistors" deviceset="RESISTOR" device="0805-RES" value="10K"/>
+<part name="R4" library="SparkFun-Resistors" deviceset="RESISTOR" device="0805-RES" value="1K"/>
 <part name="C3" library="SparkFun-Capacitors" deviceset="CAP" device="" value="0.1uF"/>
-<part name="R5" library="SparkFun-Resistors" deviceset="RESISTOR" device="0805-RES" value="10K"/>
-<part name="R6" library="SparkFun-Resistors" deviceset="RESISTOR" device="0805-RES" value="10K"/>
+<part name="R5" library="SparkFun-Resistors" deviceset="RESISTOR" device="0805-RES" value="5K6"/>
+<part name="R6" library="SparkFun-Resistors" deviceset="RESISTOR" device="0805-RES" value="4K7"/>
 <part name="GND4" library="supply1" deviceset="GND" device=""/>
 <part name="P+1" library="supply1" deviceset="+5V" device=""/>
 <part name="P+2" library="supply1" deviceset="+5V" device=""/>
@@ -4761,10 +4760,11 @@ at 30/07/2012 11:22:31</description>
 <part name="3V3" library="SparkFun-Connectors" deviceset="M01" device="PTH"/>
 <part name="Q4" library="SparkFun-DiscreteSemi" deviceset="TRANSISTOR_PNP" device="SMD" value="P-FET"/>
 <part name="GND10" library="supply1" deviceset="GND" device=""/>
-<part name="R9" library="SparkFun-Resistors" deviceset="RESISTOR" device="0805-RES" value="10K"/>
+<part name="R9" library="SparkFun-Resistors" deviceset="RESISTOR" device="0805-RES" value="4K7"/>
 <part name="Q5" library="SparkFun-DiscreteSemi" deviceset="TRANSISTOR_PNP" device="SMD" value="P-FET"/>
-<part name="R10" library="SparkFun-Resistors" deviceset="RESISTOR" device="0805-RES" value="10K"/>
+<part name="R10" library="SparkFun-Resistors" deviceset="RESISTOR" device="0805-RES" value="4K7"/>
 <part name="GND15" library="supply1" deviceset="GND" device=""/>
+<part name="Q1" library="SparkFun-DiscreteSemi" deviceset="TRANSISTOR_NPN" device="SOT23-3"/>
 </parts>
 <sheets>
 <sheet>
@@ -4796,7 +4796,6 @@ at 30/07/2012 11:22:31</description>
 <instance part="GND1" gate="1" x="218.44" y="93.98" rot="MR90"/>
 <instance part="." gate="G$1" x="200.66" y="111.76" rot="R180"/>
 <instance part="C1" gate="G$1" x="25.4" y="78.74" rot="MR0"/>
-<instance part="Q1" gate="G$1" x="106.68" y="162.56" rot="MR0"/>
 <instance part="U$3" gate="G$1" x="160.02" y="180.34" rot="R180"/>
 <instance part="10F320" gate="A" x="83.82" y="35.56"/>
 <instance part="R7" gate="G$1" x="269.24" y="170.18" rot="R90"/>
@@ -4838,6 +4837,7 @@ at 30/07/2012 11:22:31</description>
 <instance part="Q5" gate="G$1" x="35.56" y="132.08" rot="MR0"/>
 <instance part="R10" gate="G$1" x="40.64" y="139.7" rot="R90"/>
 <instance part="GND15" gate="1" x="40.64" y="114.3" rot="MR0"/>
+<instance part="Q1" gate="G$1" x="106.68" y="162.56" rot="MR0"/>
 </instances>
 <busses>
 </busses>
@@ -4980,7 +4980,6 @@ at 30/07/2012 11:22:31</description>
 <wire x1="160.02" y1="149.86" x2="160.02" y2="152.4" width="0.1524" layer="91"/>
 </segment>
 <segment>
-<pinref part="Q1" gate="G$1" pin="C"/>
 <pinref part="GND14" gate="1" pin="GND"/>
 <wire x1="104.14" y1="157.48" x2="104.14" y2="154.94" width="0.1524" layer="91"/>
 <wire x1="104.14" y1="154.94" x2="104.14" y2="152.4" width="0.1524" layer="91"/>
@@ -4989,6 +4988,7 @@ at 30/07/2012 11:22:31</description>
 <wire x1="101.6" y1="154.94" x2="104.14" y2="154.94" width="0.1524" layer="91"/>
 <junction x="104.14" y="154.94"/>
 <pinref part="JP6" gate="G$1" pin="1"/>
+<pinref part="Q1" gate="G$1" pin="E"/>
 </segment>
 <segment>
 <pinref part="OLED" gate="G$1" pin="1"/>
@@ -5165,9 +5165,9 @@ at 30/07/2012 11:22:31</description>
 <net name="N$1" class="0">
 <segment>
 <wire x1="99.06" y1="172.72" x2="104.14" y2="172.72" width="0.1524" layer="91"/>
-<pinref part="Q1" gate="G$1" pin="E"/>
 <wire x1="104.14" y1="172.72" x2="104.14" y2="167.64" width="0.1524" layer="91"/>
 <pinref part="JP6" gate="G$1" pin="2"/>
+<pinref part="Q1" gate="G$1" pin="C"/>
 </segment>
 </net>
 <net name="ICSPDAT" class="0">
@@ -5205,9 +5205,9 @@ at 30/07/2012 11:22:31</description>
 </net>
 <net name="N$8" class="0">
 <segment>
-<pinref part="Q1" gate="G$1" pin="B"/>
 <pinref part="R4" gate="G$1" pin="1"/>
 <wire x1="109.22" y1="162.56" x2="111.76" y2="162.56" width="0.1524" layer="91"/>
+<pinref part="Q1" gate="G$1" pin="B"/>
 </segment>
 </net>
 <net name="ANA" class="0">
