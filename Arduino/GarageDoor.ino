@@ -33,10 +33,11 @@ SOFTWARE.
 #include "WiFiManager.h"
 #include <ESP8266WebServer.h>
 
+#define USEPIC // For PIC control
 const char *controlPassword = "password"; // device password for modifying any settings
 const char *serverFile = "GarageDoor";    // Creates /iot/GarageDoor.php
 int serverPort = 84;                    // port fwd for fwdip.php
-const char *myHost = "www.yourdomian.com"; // php forwarding/time server
+const char *myHost = "www.yourdomain.com"; // php forwarding/time server
 
 union ip4
 {
@@ -84,11 +85,11 @@ struct eeSet // EEPROM backed data
   uint16_t nCarThresh;
   uint16_t nDoorThresh;
   uint16_t alarmTimeout;
-  uint16_t closeTimeout;  // Set longer than it takes to close the door  /?C=30 (Todo: Text input needs to be added to the page)
+  uint16_t closeTimeout;
 };
 eeSet ee = { sizeof(eeSet), 0xAAAA,
-  "192.168.0.189", 83,  2, 10*60, // dataServer, port, TZ, interval
-  500, 500,
+  "192.168.0.189", 83,  2, 60*60, // dataServer, port, TZ, interval
+  500, 500,       // thresholds
   5*60,          // alarmTimeout
   30            // closeTimeout
 };
@@ -225,37 +226,42 @@ void handleRoot() // Main webpage interface
   else
   {
     String page = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>"
-          "<title>WiFi Garage Door Opener</title>";
-    page += "<style>div,input {margin-bottom: 5px;}body{width:260px;display:block;margin-left:auto;margin-right:auto;text-align:right;font-family: Arial, Helvetica, sans-serif;}}</style>";
-    page += "<body onload=\"{"
+          "<title>WiFi Garage Door Opener</title>"
+          "<style>div,input {margin-bottom: 5px;}body{width:260px;display:block;margin-left:auto;margin-right:auto;text-align:right;font-family: Arial, Helvetica, sans-serif;}}</style>"
+          "<body onload=\"{"
       "key = localStorage.getItem('key'); if(key!=null) document.getElementById('myKey').value = key;"
       "for(i=0;i<document.forms.length;i++) document.forms[i].elements['key'].value = key;"
       "}\">";
 
-    page += "<h3>WiFi Garage Door Opener </h3>";
-    page += "<p>" + timeFmt(true, true);
-    page += "</p>";
-  
-    page += "<table align=\"right\"><tr><td align=\"right\">Garage</td>";
-    page += "<td align=\"center\">";
+    page += "<h3>WiFi Garage Door Opener </h3>"
+            "<table align=\"right\">"
+            "<tr><td>";
+    page += timeFmt(true, true);
+    page += "</td><td>";
+    page += button("D", bDoorOpen ? "Close":"Open");
+    page += "</td></tr>"
+          "<tr><td align=\"center\">Garage</td>"
+          "<td align=\"center\">Car</td>"
+          "</tr><tr>"
+          "<td align=\"center\">";
     page += bDoorOpen ? "<font color=\"red\"><b>OPEN</b></font>" : "<b>CLOSED</b>";
-    page += "</td></tr>";
-    page += "<tr><td align=\"right\">Car</td>";
-    page += "<td align=\"center\">";
+    page += "</td>"
+            "<td align=\"center\">";
     page += bCarIn ? "<b>IN</b>" : "<font color=\"red\"><b>OUT</b></font>";
-    page += "</td></tr>";
-    page += "<tr><td colspan=2 align=\"center\">";
-    page += button("D", bDoorOpen ? "Close":"Open"); page += "</td>";
-    page += "</tr><tr><td></td><td align=\"center\">Timezone</td></tr>";
-    page += "<tr><td>";
+    page += "</td></tr>"
+            "<tr><td colspan=2>" // unused row
+            "</td>"
+            "</tr><tr><td align=\"center\">Timeout</td><td align=\"center\">Timezone</td></tr>"
+            "<tr><td>";
+    page += valButton("C", String(ee.closeTimeout) );
     page += "</td><td>";  page += valButton("Z", String(ee.tz) );
-    page += "</td></tr></table>";
+    page += "</td></tr></table>"
 
-    page += "<input id=\"myKey\" name=\"key\" type=text size=50 placeholder=\"password\" style=\"width: 150px\">";
-    page += "<input type=\"button\" value=\"Save\" onClick=\"{localStorage.setItem('key', key = document.all.myKey.value)}\">";
-    page += "<br>Logged IP: ";
+            "<input id=\"myKey\" name=\"key\" type=text size=50 placeholder=\"password\" style=\"width: 150px\">"
+            "<input type=\"button\" value=\"Save\" onClick=\"{localStorage.setItem('key', key = document.all.myKey.value)}\">"
+            "<br><small>Logged IP: ";
     page += ipString(ip);
-    page += "<br></body></html>";
+    page += "</small><br></body></html>";
 
     server.send ( 200, "text/html", page );
   }
@@ -458,7 +464,7 @@ void loop()
         for(int i = 0; i < ANA_AVG; i++)
           carVal += vals[1][i];
         carVal /= ANA_AVG;
-        bCarIn = (carVal < ee.nCarThresh) ? true:false;
+        bCarIn = (carVal > ee.nCarThresh) ? true:false;
 //        Serial.print("Car: ");
 //        Serial.println(carVal);
         digitalWrite(RANGE_2, LOW);   // enable ADC 1
