@@ -18,7 +18,7 @@ SOFTWARE.
 */
 
 // Watchdog timer PIC10F320 to reset ESP and filter startup glitches for remote output
-// This will pulse a pulldown only for 1000ms at the remote after initializing the ESP pins in setup()
+// This will pulse a pulldown only for 1000ms at the remote if 10 pulses are detected within 1000ms
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,28 +32,30 @@ SOFTWARE.
 #define REMOTE_IN 	PORTAbits.RA3
 
 uint16_t timer;
-bool click;
+uint16_t clicks;
 bool reset;
-#define TIMEOUT 60*5
+#define TIMEOUT 10
 
 void interrupt isr(void)
 {
-	if(IOCAFbits.IOCAF3)	// BEEP pin on ESP
+	if(IOCAFbits.IOCAF3)	// REMOTE pin on ESP
 	{
 		IOCAFbits.IOCAF3 = 0;
-		click = true;
+		clicks++;
+		TMR0 = 13; // reset the timer to 1 second (time can be shortened)
 	}
 	else if(IOCAFbits.IOCAF2)	// 1Hz Heartbeat
 	{
 		IOCAFbits.IOCAF2 = 0;
-		if(REMOTE_IN == 0 && click == false) // By setting REMOTE_IN low, this will begin to function
-			timer = 10;			// 10 second timeout
+		if(REMOTE_IN == 0)		// By setting REMOTE_IN low, the timer is reset by the heartbeat
+			timer = TIMEOUT;	// 10 second timeout
 	}
 	else if(INTCONbits.TMR0IF)
 	{
 		INTCONbits.TMR0IF = 0;
 		TMR0 = 13;
-		if(timer && click == false)
+		if(clicks != 10) clicks = 0;		// reset the remote clicks
+		if(timer <= TIMEOUT)
 		{
 			if(--timer == 0)
 			{
@@ -80,8 +82,8 @@ void main(void)
 	CWG1CON0 = 0;
 
 	OPTION_REGbits.PS = 0b100;	// 1:32
-  OPTION_REGbits.PSA = 0;		// Use prescaler
-  OPTION_REGbits.T0CS = 0;	// internal
+	OPTION_REGbits.PSA = 0;		// Use prescaler
+	OPTION_REGbits.T0CS = 0;	// internal
 	OPTION_REGbits.INTEDG = 1;
 
 	INTCONbits.TMR0IE = 1;
@@ -92,14 +94,9 @@ void main(void)
 	TMR0 = 13;
 
 	WDTCON = 0b00010100;	// disabled
-	timer = TIMEOUT * 2;	// 10 minutes at powerup
-	click = false;
-	reset = false;
 
-	while(!click);			// wait for initial false pulse
-
-	timer = TIMEOUT * 2;	// 10 minutes at powerup
-	click = false;
+	timer = TIMEOUT + 1;	// disabled at powerup
+	clicks = 0;
 	reset = false;
 
 	while(1)
@@ -107,20 +104,20 @@ void main(void)
 		if(reset)
 		{
 			reset = false;
-			timer = TIMEOUT;	// restart every 5 minutes if nothing happens
+			timer = TIMEOUT;	// ready for next restart
+		//	timer = TIMEOUT+1;	// or disable
 			RESET_OUT = 0;		// pulse the reset
 			__delay_ms(100);
 			RESET_OUT = 1;
 		}
 
-		if(click)	// remote from the ESP
+		if(clicks == 10)	// remote from the ESP
 		{
-			timer = TIMEOUT;	// restart every 5 minutes if nothing happens
-			REMOTE_OUT = 1;		// pulse the remote
-			TRISAbits.TRISA0 = 0; // using open collector, bypassing transistor
+			REMOTE_OUT = 1;		// pulse the remote high
+			TRISAbits.TRISA0 = 0	// using NPN so it pulls down
 			__delay_ms(1000);
 			TRISAbits.TRISA0 = 1;
-			click = false;
+			clicks = 0;
 		}
 	}
 }
