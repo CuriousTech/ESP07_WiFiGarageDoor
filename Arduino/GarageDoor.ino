@@ -67,6 +67,7 @@ int nWrongPass;
 SSD1306 display(0x3c, 5, 4); // Initialize the oled display for address 0x3c, sda=5, sdc=4
 bool bDisplay_on = true;
 bool bNeedUpdate = true;
+bool bProgram;
 
 WiFiManager wifi(0);  // AP page:  192.168.4.1
 extern MDNSResponder mdns;
@@ -151,7 +152,7 @@ void handleRoot() // Main webpage interface
       case 'T': // alarm timeout
           ee.alarmTimeout = s.toInt();
           break;
-      case 'i': // ?ip=server&port=80&int=60&key=password (htTp://192.168.0.197:84/s?ip=192.168.0.189&port=83&int=300&Timeout=600&key=password)
+      case 'i': // ?ip=server&port=80&int=60&key=password (htTp://192.168.0.197:84/s?ip=192.168.0.189&port=83&int=1800&Timeout=600&key=password)
           if(which) // interval
           {
             ee.interval = s.toInt();
@@ -164,12 +165,12 @@ void handleRoot() // Main webpage interface
             ipSet = true;
            }
            break;
-      case 'L':
-           if(which) // LD
+      case 'L':           // Ex set car=290, door=500 : http://192.168.0.190:84/s?Ln=500&Ld=290&key=password
+           if(which) // Ld
            {
              ee.nDoorThresh = s.toInt();
            }
-           else // LN
+           else // Ln
            {
              ee.nCarThresh = s.toInt();
            }
@@ -188,12 +189,17 @@ void handleRoot() // Main webpage interface
           {
               pinMode(REMOTE, OUTPUT);
               pinMode(HEARTBEAT, OUTPUT);
+              Serial.println("Outputs enabled");
+              bProgram = false;
           }
           else
           {
-              pinMode(REMOTE, INPUT);
+              pinMode(REMOTE, INPUT_PULLUP);
               pinMode(HEARTBEAT, INPUT);
+              Serial.println("Program mode enabled");
+              bProgram = true;
           }
+          ipSet = true;
           break;
     }
   }
@@ -422,7 +428,8 @@ void setup()
 void loop()
 {
   static uint8_t tog = 0;
-#define ANA_AVG 20
+  static uint8_t cnt = 0;
+#define ANA_AVG 30
   static uint16_t vals[2][ANA_AVG];
   static uint8_t ind[2];
   bool bSkip = false;
@@ -438,7 +445,7 @@ void loop()
 //    Serial.print(n);
     
     bSkip = true; // skip first read (needs time to start)
-    switch(tog)
+    switch(cnt)
     {
       case 0: // read 1 (middle header)
         doorVal = 0;
@@ -457,9 +464,13 @@ void loop()
 //        Serial.println(doorVal);
         digitalWrite(RANGE_1, LOW);   // enable ADC 2
         digitalWrite(RANGE_2, HIGH);
-        tog = 1; // toogle ana after averaging
+        cnt++;
+        tog = 1;
         break;
       case 1: // read 2 (right header)
+        cnt++;
+        break;
+      case 2:
         carVal = 0;
         for(int i = 0; i < ANA_AVG; i++)
           carVal += vals[1][i];
@@ -469,7 +480,11 @@ void loop()
 //        Serial.println(carVal);
         digitalWrite(RANGE_2, LOW);   // enable ADC 1
         digitalWrite(RANGE_1, HIGH);
+        cnt++;
         tog = 0;
+        break;
+      case 3: // 2 seconds each now
+        cnt = 0;
         break;
     }
 
@@ -504,7 +519,8 @@ void loop()
         ctSendLog(true); // Send to server as alert so it can send a Pushbullet
       }
     }
-    digitalWrite(HEARTBEAT, !digitalRead(HEARTBEAT));
+    if(bProgram == false)
+      digitalWrite(HEARTBEAT, !digitalRead(HEARTBEAT));
   }
 
   DrawScreen();
@@ -553,13 +569,19 @@ void DrawScreen()
 
 void pulseRemote()
 {
+  if(bProgram == true)
+    return;
   if(bDoorOpen == false) // closing door
   {
     doorOpenTimer = ee.closeTimeout; // set the short timeout 
   }
-  digitalWrite(REMOTE, HIGH);
-  delay(100);
-  digitalWrite(REMOTE, LOW);
+  for(int i = 0; i < 10; i++)
+  {
+    digitalWrite(REMOTE, HIGH);
+    delay(10);
+    digitalWrite(REMOTE, LOW);
+    delay(10);
+  }
 }
 
 void eeWrite() // write the settings if changed
