@@ -12,6 +12,7 @@
 #include "WiFiManager.h"
 #include "ssd1306_i2c.h"
 #include "icons.h"
+#include <Time.h>
 
 extern SSD1306 display;
 extern int httpPort;
@@ -61,7 +62,7 @@ boolean WiFiManager::autoConnect(char const *apName) {
     //setup AP
     beginConfigMode();
     //start portal and loop
-    startWebConfig();
+    startWebConfig(ssid);
     return false;
 }
 
@@ -90,7 +91,7 @@ String WiFiManager::getEEPROMString(int start, int len) {
     for (int i = _eepromStart + start; i < _eepromStart + start + len; i++) {
         //DEBUG_PRINT(i);
         char c = char(EEPROM.read(i));
-        if(c == 0) break; // fix for 2.0.0
+        if(c == 0 || c == 255) break; // fix for 2.0.0
         string += c;
     }
     return string;
@@ -152,13 +153,13 @@ boolean WiFiManager::hasConnected(void)
   return false;
 }
 
-void WiFiManager::startWebConfig() {
+void WiFiManager::startWebConfig(String ssid) {
     DEBUG_PRINT("");
     display.print("WiFi connected");
     DEBUG_PRINT("WiFi connected");
     DEBUG_PRINT(WiFi.localIP());
     DEBUG_PRINT(WiFi.softAPIP());
-    if (!mdns.begin(_apName, WiFi.localIP())) {
+    if (!mdns.begin(_apName)) {
         DEBUG_PRINT("Error setting up MDNS responder!");
         display.print("mDNS error");
         while(1) {
@@ -171,18 +172,40 @@ void WiFiManager::startWebConfig() {
     display.print("Server started");
     DEBUG_PRINT("Server started");
 
-    while(serverLoop() == WM_WAIT) {
-      //looping
+    uint8_t s;
+    uint8_t m = minute();
+
+    _timeout = true;
+    while(serverLoop() == WM_WAIT) {      //looping
+      if(s != second()) // pulse LED
+      {
+        s = second();
+        digitalWrite(2, !digitalRead(2)); // Toggle blue LED
+      }
+      if(_timeout)
+      {
+        if(m != minute() )
+        {
+          m = minute();
+          int n = WiFi.scanNetworks();
+          if(n){
+            for (int i = 0; i < n; ++i)
+            {
+                if(WiFi.SSID(i) == ssid)
+                  ESP.reset();
+            }
+          }
+        }
+      }
     }
 
     display.print("All done.  Bye.");
     DEBUG_PRINT("Setup done");
-    delay(10000);
+    delay(5000);
     ESP.reset();
 }
 
-String WiFiManager::beginConfigMode(void) {
-    
+void WiFiManager::beginConfigMode(void) {
     WiFi.mode(WIFI_AP);
     WiFi.softAP(_apName);
     DEBUG_PRINT("Started Soft Access Point");
@@ -191,7 +214,6 @@ String WiFiManager::beginConfigMode(void) {
     char ip[24];
     sprintf(ip, "%d.%d.%d.%d", apIp[0], apIp[1], apIp[2], apIp[3]);
     display.print(String(ip));
-    return ip;
 }
 
 int WiFiManager::serverLoop()
@@ -281,7 +303,7 @@ int WiFiManager::serverLoop()
         head.replace("{v}", "Saved config");
         s += HTTP_STYLE;
         s += HTTP_HEAD_END;
-        s += "saved to eeprom...<br/>resetting in 10 seconds";
+        s += "saved to eeprom...<br/>resetting in 5 seconds";
         s += HTTP_END;
         client.print(s);
         client.flush();
