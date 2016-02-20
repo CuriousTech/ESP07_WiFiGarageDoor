@@ -34,19 +34,13 @@ SOFTWARE.
 #include <ESP8266WebServer.h>
 
 #define USEPIC // For PIC control
+
+#define HCSR04  // For the ultrasonic rangefinder
+
 const char *controlPassword = "password"; // device password for modifying any settings
 const char *serverFile = "GarageDoor";    // Creates /iot/GarageDoor.php
 int serverPort = 84;                    // port fwd for fwdip.php
 const char *myHost = "www.yourdomain.com"; // php forwarding/time server
-
-union ip4
-{
-  struct
-  {
-    uint8_t b[4];
-  } b;
-  uint32_t l;
-};
 
 extern "C" {
   #include "user_interface.h" // Needed for deepSleep which isn't used
@@ -55,8 +49,8 @@ extern "C" {
 #define TOP_ACC    0  // direct pin on remote header (not used)
 #define ESP_LED    2  // low turns on ESP blue LED
 #define HEARTBEAT  2
-#define ACC       13  // the divider to the bottom corner pin
-#define DIG_IN    12  // the direct pin (bootm 3 pin header)
+#define ECHO      13  // the voltage divider to the bottom corner pin (short R7, don't use R8)
+#define TRIG      12  // the direct pin (bottom 3 pin header)
 #define RANGE_2   14
 #define REMOTE    15
 #define RANGE_1   16
@@ -104,17 +98,15 @@ uint16_t doorVal;
 uint16_t carVal;
 uint16_t doorOpenTimer;
 
-String ipString(long l)
+String ipString(IPAddress ip) // Convert IP to string
 {
-  ip4 ip;
-  ip.l = l;
-  String sip = String(ip.b.b[0]);
+  String sip = String(ip[0]);
   sip += ".";
-  sip += ip.b.b[1];
+  sip += ip[1];
   sip += ".";
-  sip += ip.b.b[2];
+  sip += ip[2];
   sip += ".";
-  sip += ip.b.b[3];
+  sip += ip[3];
   return sip;
 }
 
@@ -165,12 +157,12 @@ void handleRoot() // Main webpage interface
             ipSet = true;
            }
            break;
-      case 'L':           // Ex set car=290, door=500 : http://192.168.0.190:84/s?Ln=500&Ld=290&key=password
-           if(which) // Ld
+      case 'L':           // Ex set car=290, door=500 : hTtp://192.168.0.190:84?Ln=500&Ld=290&key=password
+           if(which) // Ln
            {
              ee.nDoorThresh = s.toInt();
            }
-           else // Ln
+           else // Ld
            {
              ee.nCarThresh = s.toInt();
            }
@@ -208,7 +200,6 @@ void handleRoot() // Main webpage interface
 
   if(server.args() && (password != controlPassword) )
   {
-    memcpy(&ee, &save, sizeof(ee)); // undo any changes
     if(nWrongPass == 0) // it takes at least 10 seconds to recognize a wrong password
       nWrongPass = 10;
     else if((nWrongPass & 0xFFFFF000) == 0 ) // time doubles for every high speed wrong password attempt.  Max 1 hour
@@ -218,6 +209,9 @@ void handleRoot() // Main webpage interface
     ctSendIP(false, ip); // log attempts
     bRemote = false;
   }
+
+  if(nWrongPass) memcpy(&ee, &save, sizeof(ee)); // undo any changes
+
   lastIP = ip;
 
   if(ipSet) // if data IP being set, return local IP
@@ -370,16 +364,34 @@ void handleNotFound() {
   server.send ( 404, "text/plain", message );
 }
 
+#ifdef HCSR04
+
+volatile unsigned long range = 1;
+
+void echoISR()
+{
+  static unsigned long start;
+
+  if(digitalRead(ECHO) == HIGH) // count from rising edge to falling edge
+    start = micros();
+  else
+    range = (micros() - start) >> 2; // don't need any specific value
+}
+#endif
+
 void setup()
 {
   pinMode(RANGE_1, OUTPUT);
   pinMode(RANGE_2, OUTPUT);
+  pinMode(TRIG, OUTPUT);      // HC-SR04 trigger
   digitalWrite(RANGE_1, LOW); // LOW = off (do not turn both on at the same time)
   digitalWrite(RANGE_2, LOW);
   pinMode(REMOTE, OUTPUT);
   pinMode(HEARTBEAT, OUTPUT);
   digitalWrite(REMOTE, HIGH); // watchdog disabled (in case of config)
   digitalWrite(HEARTBEAT, LOW);
+
+  digitalWrite(TRIG, LOW);
 
   // initialize dispaly
   display.init();
@@ -392,7 +404,7 @@ void setup()
   Serial.println();
   Serial.println();
 
-  bool bFound = wifi.findOpenAP(myHost); // Tries all open APs, then starts softAP mode for config
+  wifi.autoConnect("GarageDoor");
   eeRead(); // don't access EE before WiFi init
 
   Serial.println("");
@@ -423,13 +435,17 @@ void setup()
 
   digitalWrite(RANGE_2, LOW);   // enable ADC 1
   digitalWrite(RANGE_1, HIGH);
+
+#ifdef HCSR04
+  attachInterrupt(ECHO, echoISR, CHANGE);
+#endif
 }
 
 void loop()
 {
   static uint8_t tog = 0;
   static uint8_t cnt = 0;
-#define ANA_AVG 30
+#define ANA_AVG 24
   static uint16_t vals[2][ANA_AVG];
   static uint8_t ind[2];
   bool bSkip = false;
@@ -443,11 +459,13 @@ void loop()
 
 //    int n = tween(830, 820, 285, 360);
 //    Serial.print(n);
-    
+
+#ifndef HCSR04
     bSkip = true; // skip first read (needs time to start)
     switch(cnt)
     {
       case 0: // read 1 (middle header)
+#endif                  // this section reads only IR rangefinder 1
         doorVal = 0;
         for(int i = 0; i < ANA_AVG; i++)
           doorVal += vals[0][i];
@@ -462,6 +480,7 @@ void loop()
         }
 //        Serial.print("Door: ");
 //        Serial.println(doorVal);
+#ifndef HCSR04
         digitalWrite(RANGE_1, LOW);   // enable ADC 2
         digitalWrite(RANGE_2, HIGH);
         cnt++;
@@ -475,7 +494,7 @@ void loop()
         for(int i = 0; i < ANA_AVG; i++)
           carVal += vals[1][i];
         carVal /= ANA_AVG;
-        bCarIn = (carVal > ee.nCarThresh) ? true:false;
+        bCarIn = (carVal > ee.nCarThresh) ? true:false; // higher is closer
 //        Serial.print("Car: ");
 //        Serial.println(carVal);
         digitalWrite(RANGE_2, LOW);   // enable ADC 1
@@ -487,6 +506,20 @@ void loop()
         cnt = 0;
         break;
     }
+#endif
+
+#ifdef HCSR04
+    carVal = 0;
+    for(int i = 0; i < ANA_AVG; i++)
+      carVal += vals[1][i];
+    carVal /= ANA_AVG;
+
+    bCarIn = (carVal < ee.nCarThresh) ? true:false; // lower is closer
+    Serial.print("Car: ");
+    Serial.print(carVal);
+    Serial.print("  ");
+    Serial.println(vals[1][0]);
+#endif
 
     if (hour_save != hour()) // update our IP and time daily (at 2AM for DST)
     {
@@ -530,12 +563,24 @@ void loop()
     vals[tog][ind[tog]] = analogRead(A0); // read current IR sensor value into current circle buf
     if(++ind[tog] >= ANA_AVG) ind[tog] = 0;
   }
-}
 
-int16_t ind;
+#ifdef HCSR04
+    if(range)
+    {
+      vals[1][ind[1]] = range; // read current IR sensor value into current circle buf
+      if(++ind[1] >= ANA_AVG) ind[1] = 0;
+      range = 0;
+      delay(20);
+      digitalWrite(TRIG, HIGH); // pulse the rangefinder
+      delayMicroseconds(10);
+      digitalWrite(TRIG, LOW);
+    }
+#endif
+}
 
 void DrawScreen()
 {
+  static int16_t ind;
   // draw the screen here
   display.clear();
 
