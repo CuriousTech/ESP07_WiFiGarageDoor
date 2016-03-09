@@ -1,6 +1,6 @@
 /**The MIT License (MIT)
 
-Copyright (c) 2015 by Greg Cunningham, CuriousTech
+Copyright (c) 2016 by Greg Cunningham, CuriousTech
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -66,6 +66,8 @@ bool bProgram;
 WiFiManager wifi(0);  // AP page:  192.168.4.1
 extern MDNSResponder mdns;
 ESP8266WebServer server( serverPort );
+#define CLIENTS 4
+WiFiClient eventClient[CLIENTS];
 
 int httpPort = 80; // may be modified by open AP scan
 
@@ -110,7 +112,7 @@ String ipString(IPAddress ip) // Convert IP to string
   return sip;
 }
 
-void handleRoot() // Main webpage interface
+bool parseArgs()
 {
   char temp[100];
   String password;
@@ -121,7 +123,7 @@ void handleRoot() // Main webpage interface
   eeSet save;
   memcpy(&save, &ee, sizeof(ee));
 
-  Serial.println("handleRoot");
+  Serial.println("parseArgs");
 
   for ( uint8_t i = 0; i < server.args(); i++ ) {
     server.arg(i).toCharArray(temp, 100);
@@ -154,7 +156,6 @@ void handleRoot() // Main webpage interface
             s.toCharArray(ee.dataServer, 64); // todo: parse into domain/URI
             Serial.print("Server ");
             Serial.println(ee.dataServer);
-            ipSet = true;
            }
            break;
       case 'L':           // Ex set car=290, door=500 : hTtp://192.168.0.190:84?Ln=500&Ld=290&key=password
@@ -191,7 +192,6 @@ void handleRoot() // Main webpage interface
               Serial.println("Program mode enabled");
               bProgram = true;
           }
-          ipSet = true;
           break;
     }
   }
@@ -213,42 +213,64 @@ void handleRoot() // Main webpage interface
   if(nWrongPass) memcpy(&ee, &save, sizeof(ee)); // undo any changes
 
   lastIP = ip;
+  if(bRemote)
+     pulseRemote();
+  if(bUpdateTime)
+    ctSetIp();
+}
 
-  if(ipSet) // if data IP being set, return local IP
-  {
-    String page = "{\"ip\": \"";
-    page += ipString(WiFi.localIP());
-    page += ":";
-    page += serverPort;
-    page += "\"}";
-    server.send ( 200, "text/json", page );
-  }
-  else
-  {
+void handleRoot() // Main webpage interface
+{
+  Serial.println("handleRoot");
+
+  parseArgs();
+
     String page = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>"
-          "<title>WiFi Garage Door Opener</title>"
-          "<style>div,input {margin-bottom: 5px;}body{width:260px;display:block;margin-left:auto;margin-right:auto;text-align:right;font-family: Arial, Helvetica, sans-serif;}}</style>"
-          "<body onload=\"{"
+      "<title>WiFi Garage Door Opener</title>"
+      "<style>div,input {margin-bottom: 5px;}body{width:260px;display:block;margin-left:auto;margin-right:auto;text-align:right;font-family: Arial, Helvetica, sans-serif;}}</style>"
+
+    "<script src=\"http://ajax.googleapis.com/ajax/libs/jquery/1.3.2/jquery.min.js\" type=\"text/javascript\" charset=\"utf-8\"></script>"
+    "<script type=\"text/javascript\">"
+    "function startEvents()"
+    "{"
+      "eventSource = new EventSource(\"events\");"
+      "eventSource.addEventListener('open', function(e){},false);"
+      "eventSource.addEventListener('error', function(e){},false);"
+      "eventSource.addEventListener('state',function(e){"
+        "data = JSON.parse(e.data);"
+        "document.all.car.innerHTML = data.car?\"IN\":\"OUT\";"
+        "document.all.door.innerHTML = data.door?\"OPEN\":\"CLOSED\";"
+        "document.all.doorBtn.value = data.door?\"Close\":\"Open\";"
+      "},false)"
+    "}"
+    "function setDoor(){"
+    "$.post(\"s\", { params: 'D: 0', key: document.all.myKey.value })"
+    "}"
+    "</script>"
+
+      "<body onload=\"{"
       "key = localStorage.getItem('key'); if(key!=null) document.getElementById('myKey').value = key;"
       "for(i=0;i<document.forms.length;i++) document.forms[i].elements['key'].value = key;"
-      "}\">";
+      "startEvents();}\">";
 
     page += "<h3>WiFi Garage Door Opener </h3>"
             "<table align=\"right\">"
             "<tr><td>";
     page += timeFmt(true, true);
     page += "</td><td>";
-    page += button("D", bDoorOpen ? "Close":"Open");
+    page += "<input type=\"button\" value=\"Open\" id=\"doorBtn\" onClick=\"{setDoor()}\">";
     page += "</td></tr>"
           "<tr><td align=\"center\">Garage</td>"
           "<td align=\"center\">Car</td>"
           "</tr><tr>"
-          "<td align=\"center\">";
-    page += bDoorOpen ? "<font color=\"red\"><b>OPEN</b></font>" : "<b>CLOSED</b>";
-    page += "</td>"
-            "<td align=\"center\">";
-    page += bCarIn ? "<b>IN</b>" : "<font color=\"red\"><b>OUT</b></font>";
-    page += "</td></tr>"
+          "<td align=\"center\">"
+          "<div id=\"door\">";
+    page += bDoorOpen ? "OPEN" : "CLOSED";
+    page += "</div></td>"
+            "<td align=\"center\">"
+            "<div id=\"car\">";
+    page += bCarIn ? "IN" : "OUT";
+    page += "</div></td></tr>"
             "<tr><td colspan=2>" // unused row
             "</td>"
             "</tr><tr><td align=\"center\">Timeout</td><td align=\"center\">Timezone</td></tr>"
@@ -260,20 +282,15 @@ void handleRoot() // Main webpage interface
             "<input id=\"myKey\" name=\"key\" type=text size=50 placeholder=\"password\" style=\"width: 150px\">"
             "<input type=\"button\" value=\"Save\" onClick=\"{localStorage.setItem('key', key = document.all.myKey.value)}\">"
             "<br><small>Logged IP: ";
-    page += ipString(ip);
+    page += ipString(server.client().remoteIP());
     page += "</small><br></body></html>";
 
     server.send ( 200, "text/html", page );
-  }
-  if(bUpdateTime)
-    ctSetIp();
-  if(bRemote)
-     pulseRemote();
 }
 
 String button(String id, String text) // Up/down buttons
 {
-  String s = "<form method='post' action='s'><input name='";
+  String s = "<form method='post'><input name='";
   s += id;
   s += "' type='submit' value='";
   s += text;
@@ -290,7 +307,7 @@ String sDec(int t)
 
 String valButton(String id, String val)
 {
-  String s = "<form method='post' action='s'><input name='";
+  String s = "<form method='post'><input name='";
   s += id;
   s += "' type=text size=4 value='";
   s += val;
@@ -321,8 +338,16 @@ String timeFmt(bool do_sec, bool do_12)
   return r;
 }
 
-void handleS() { // /s?x=y can be redirected to index
-  handleRoot();
+void handleS()
+{
+    parseArgs();
+
+    String page = "{\"ip\": \"";
+    page += ipString(WiFi.localIP());
+    page += ":";
+    page += serverPort;
+    page += "\"}";
+    server.send ( 200, "text/json", page );
 }
 
 // JSON format for initial or full data read
@@ -345,6 +370,45 @@ void handleJson()
   page += "}";
 
   server.send ( 200, "text/json", page );
+}
+
+// event streamer (assume keep-alive)
+void handleEvents()
+{
+  Serial.println("handleEvents");
+  server.send( 200, "text/event-stream", "" );
+
+  for(int i = 0; i < CLIENTS; i++)
+    if(eventClient[i].connected() == 0)
+    {
+      Serial.print("send OK ");
+      Serial.println(i);
+      eventClient[i] = server.client();
+      eventClient[i].print(":ok\n");
+      break;
+    }
+}
+
+void eventHeartbeat()
+{
+  static uint8_t cnt = 0;
+  if(++cnt < 10) // let's try 10 seconds
+    return;
+  cnt = 0;
+
+  for(int i = 0; i < CLIENTS; i++)
+    if(eventClient[i].connected())
+     eventClient[i].print("\n");
+}
+
+void eventPush(String s)
+{
+  for(int i = 0; i < CLIENTS; i++)
+    if(eventClient[i].connected())
+    {
+      eventClient[i].print("event: state\n");
+      eventClient[i].println("data: " + s + "\n");
+    }
 }
 
 void handleNotFound() {
@@ -404,7 +468,7 @@ void setup()
   Serial.println();
   Serial.println();
 
-  wifi.autoConnect("GarageDoor");
+  wifi.autoConnect("ESP8266");
   eeRead(); // don't access EE before WiFi init
 
   Serial.println("");
@@ -420,9 +484,10 @@ void setup()
   server.on ( "/", handleRoot );
   server.on ( "/s", handleS );
   server.on ( "/json", handleJson );
-  server.on ( "/inline", []() {
-    server.send ( 200, "text/plain", "this works as well" );
-  } );
+  server.on ( "/events", handleEvents );
+//  server.on ( "/inline", []() {
+//    server.send ( 200, "text/plain", "this works as well" );
+//  } );
   server.onNotFound ( handleNotFound );
   server.begin();
 
@@ -449,6 +514,7 @@ void loop()
   static uint16_t vals[2][ANA_AVG];
   static uint8_t ind[2];
   bool bSkip = false;
+  bool bNew;
 
   mdns.update();
   server.handleClient();
@@ -456,9 +522,6 @@ void loop()
   if(sec_save != second()) // only do stuff once per second (loop is maybe 20-30 Hz)
   {
     sec_save = second();
-
-//    int n = tween(830, 820, 285, 360);
-//    Serial.print(n);
 
 #ifndef HCSR04
     bSkip = true; // skip first read (needs time to start)
@@ -470,7 +533,6 @@ void loop()
         for(int i = 0; i < ANA_AVG; i++)
           doorVal += vals[0][i];
         doorVal /= ANA_AVG;
-        bool bNew;
         bNew = (doorVal > ee.nDoorThresh) ? true:false;
         if(bNew != bDoorOpen)
         {
@@ -514,11 +576,13 @@ void loop()
       carVal += vals[1][i];
     carVal /= ANA_AVG;
 
-    bCarIn = (carVal < ee.nCarThresh) ? true:false; // lower is closer
-    Serial.print("Car: ");
-    Serial.print(carVal);
-    Serial.print("  ");
-    Serial.println(vals[1][0]);
+    bNew = (carVal < ee.nCarThresh) ? true:false; // lower is closer
+
+    if(bNew != bCarIn)
+    {
+      bCarIn = bNew;
+      ctSendLog(false);
+    }
 #endif
 
     if (hour_save != hour()) // update our IP and time daily (at 2AM for DST)
@@ -544,7 +608,7 @@ void loop()
         eeWrite(); // update EEPROM if needed while we're at it (give user time to make many adjustments)
       }
     }
-
+    eventHeartbeat();
     if(doorOpenTimer)
     {
       if(--doorOpenTimer == 0)
@@ -620,6 +684,7 @@ void pulseRemote()
   {
     doorOpenTimer = ee.closeTimeout; // set the short timeout 
   }
+
   for(int i = 0; i < 10; i++)
   {
     digitalWrite(REMOTE, HIGH);
@@ -671,14 +736,16 @@ uint16_t Fletcher16( uint8_t* data, int count)
 // Send logging data to a server.  This sends JSON formatted data to my local PC, but change to anything needed.
 void ctSendLog(bool bAlert)
 {
-  String url = "/s?gdoLog={\"door\": ";
-  url += bDoorOpen;
-  url += ", \"car\": ";
-  url += bCarIn;
-  url += ", \"alert\": ";
-  url += bAlert;
-  url += "}";
-  ctSend(url);
+  String s = "{\"door\": ";
+  s += bDoorOpen;
+  s += ", \"car\": ";
+  s += bCarIn;
+  s += ", \"alert\": ";
+  s += bAlert;
+  s += "}";
+  ctSend(String("/s?gdoLog=") + s);
+
+  eventPush(s);
 }
 
 // Send local IP on start for comm, or bad password attempt IP when caught
@@ -770,13 +837,9 @@ bool ctSetIp()
       tm.Minute = line.substring(20,22).toInt();
       tm.Second = line.substring(23,25).toInt();
 
-      setTime(makeTime(tm));  // set time
-      breakTime(now(), tm);   // update local tm for adjusting
-
-      tm.Hour += ee.tz + IsDST();   // time zone change
-      if(tm.Hour > 23) tm.Hour -= 24;
-
-      setTime(makeTime(tm)); // set it again
+      unsigned long t = makeTime(tm);
+      t += 3600 * (ee.tz + DST()); // offset in hours
+      setTime(t);  // set time
 
       Serial.println("Time updated");
     }
@@ -786,12 +849,15 @@ bool ctSetIp()
   return true;
 }
 
-bool IsDST()
+uint8_t DST() // 2016 starts 2AM Mar 13, ends Nov 6
 {
   uint8_t m = month();
-  if (m < 3 || m > 11)  return false;
-  if (m > 3 && m < 11)  return true;
-  int8_t previousSunday = day() - weekday();
-  if(m == 2) return previousSunday >= 8;
-  return previousSunday <= 0;
+  int8_t d = day();
+  int8_t dow = weekday();
+  if ((m  >  3 && m < 11 ) || 
+      (m ==  3 && d >= 8 && dow == 0 && hour() >= 2) ||  // DST starts 2nd Sunday of March;  2am
+      (m == 11 && d <  8 && dow >  0) ||
+      (m == 11 && d <  8 && dow == 0 && hour() < 2))   // DST ends 1st Sunday of November; 2am
+    return 1;
+ return 0;
 }
