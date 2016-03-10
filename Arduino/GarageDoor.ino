@@ -26,6 +26,7 @@ SOFTWARE.
 #include "ssd1306_i2c.h"
 #include "icons.h"
 #include <Time.h>
+#include <dht.h>
 
 #include <WiFiClient.h>
 #include <EEPROM.h>
@@ -33,27 +34,20 @@ SOFTWARE.
 #include "WiFiManager.h"
 #include <ESP8266WebServer.h>
 
-#define USEPIC // For PIC control
-
-#define HCSR04  // For the ultrasonic rangefinder
-
 const char *controlPassword = "password"; // device password for modifying any settings
 const char *serverFile = "GarageDoor";    // Creates /iot/GarageDoor.php
-int serverPort = 84;                    // port fwd for fwdip.php
+int serverPort = 80;                    // port fwd for fwdip.php
 const char *myHost = "www.yourdomain.com"; // php forwarding/time server
 
 extern "C" {
   #include "user_interface.h" // Needed for deepSleep which isn't used
 }
 
-#define TOP_ACC    0  // direct pin on remote header (not used)
 #define ESP_LED    2  // low turns on ESP blue LED
-#define HEARTBEAT  2
-#define ECHO      13  // the voltage divider to the bottom corner pin (short R7, don't use R8)
-#define TRIG      12  // the direct pin (bottom 3 pin header)
-#define RANGE_2   14
+#define ECHO      12  // the voltage divider to the bottom corner pin (short R7, don't use R8)
+#define TRIG      13  // the direct pin (bottom 3 pin header)
+#define DHT_22    14
 #define REMOTE    15
-#define RANGE_1   16
 
 uint32_t lastIP;
 int nWrongPass;
@@ -61,13 +55,14 @@ int nWrongPass;
 SSD1306 display(0x3c, 5, 4); // Initialize the oled display for address 0x3c, sda=5, sdc=4
 bool bDisplay_on = true;
 bool bNeedUpdate = true;
-bool bProgram;
 
 WiFiManager wifi(0);  // AP page:  192.168.4.1
 extern MDNSResponder mdns;
 ESP8266WebServer server( serverPort );
 #define CLIENTS 4
 WiFiClient eventClient[CLIENTS];
+
+DHT dht;
 
 int httpPort = 80; // may be modified by open AP scan
 
@@ -177,22 +172,6 @@ bool parseArgs()
       case 'O': // OLED
           bDisplay_on = s.toInt() ? true:false;
           break;
-      case 'B':   // for PIC programming
-          if(s.toInt())
-          {
-              pinMode(REMOTE, OUTPUT);
-              pinMode(HEARTBEAT, OUTPUT);
-              Serial.println("Outputs enabled");
-              bProgram = false;
-          }
-          else
-          {
-              pinMode(REMOTE, INPUT_PULLUP);
-              pinMode(HEARTBEAT, INPUT);
-              Serial.println("Program mode enabled");
-              bProgram = true;
-          }
-          break;
     }
   }
 
@@ -237,14 +216,17 @@ void handleRoot() // Main webpage interface
       "eventSource.addEventListener('open', function(e){},false);"
       "eventSource.addEventListener('error', function(e){},false);"
       "eventSource.addEventListener('state',function(e){"
-        "data = JSON.parse(e.data);"
-        "document.all.car.innerHTML = data.car?\"IN\":\"OUT\";"
-        "document.all.door.innerHTML = data.door?\"OPEN\":\"CLOSED\";"
-        "document.all.doorBtn.value = data.door?\"Close\":\"Open\";"
+        "d = JSON.parse(e.data);"
+        "document.all.car.innerHTML = d.car?\"IN\":\"OUT\";"
+        "document.all.door.innerHTML = d.door?\"OPEN\":\"CLOSED\";"
+        "document.all.doorBtn.value = d.door?\"Close\":\"Open\";"
+        "document.all.temp.innerHTML = d.temp+\"&degF\";"
+        "document.all.rh.innerHTML = d.rh+'%';"
+        "if(d.alert) alert(\"Door failed to close!\");"
       "},false)"
     "}"
     "function setDoor(){"
-    "$.post(\"s\", { params: 'D: 0', key: document.all.myKey.value })"
+    "$.post(\"s\", { D: 0, key: document.all.myKey.value })"
     "}"
     "</script>"
 
@@ -271,9 +253,12 @@ void handleRoot() // Main webpage interface
             "<div id=\"car\">";
     page += bCarIn ? "IN" : "OUT";
     page += "</div></td></tr>"
-            "<tr><td colspan=2>" // unused row
-            "</td>"
-            "</tr><tr><td align=\"center\">Timeout</td><td align=\"center\">Timezone</td></tr>"
+            "<tr><td>" // unused row
+            "<div id=\"temp\">";
+    page +=  dht.toFahrenheit( dht.getTemperature() );
+    page += "&degF</div></td><td><div id=\"rh\">";
+    page += dht.getHumidity();
+    page += "%</div></td></tr><tr><td align=\"center\">Timeout</td><td align=\"center\">Timezone</td></tr>"
             "<tr><td>";
     page += valButton("C", String(ee.closeTimeout) );
     page += "</td><td>";  page += valButton("Z", String(ee.tz) );
@@ -381,8 +366,6 @@ void handleEvents()
   for(int i = 0; i < CLIENTS; i++)
     if(eventClient[i].connected() == 0)
     {
-      Serial.print("send OK ");
-      Serial.println(i);
       eventClient[i] = server.client();
       eventClient[i].print(":ok\n");
       break;
@@ -398,17 +381,35 @@ void eventHeartbeat()
 
   for(int i = 0; i < CLIENTS; i++)
     if(eventClient[i].connected())
-     eventClient[i].print("\n");
+//     eventClient[i].print("\n");
+      eventPush(false);
 }
 
-void eventPush(String s)
+void eventPush(bool bAlert)
 {
+  String s = dataJson(bAlert);
   for(int i = 0; i < CLIENTS; i++)
     if(eventClient[i].connected())
     {
       eventClient[i].print("event: state\n");
       eventClient[i].println("data: " + s + "\n");
     }
+}
+
+String dataJson(bool bAlert)
+{
+  String s = "{\"door\": ";
+  s += bDoorOpen;
+  s += ",\"car\": ";
+  s += bCarIn;
+  s += ",\"alert\": ";
+  s += bAlert;
+  s += ",\"temp\": \"";
+  s += dht.toFahrenheit( dht.getTemperature() );
+  s += "\",\"rh\": \"";
+  s += dht.getHumidity();
+  s += "\"}";
+  return s;
 }
 
 void handleNotFound() {
@@ -428,8 +429,6 @@ void handleNotFound() {
   server.send ( 404, "text/plain", message );
 }
 
-#ifdef HCSR04
-
 volatile unsigned long range = 1;
 
 void echoISR()
@@ -441,19 +440,13 @@ void echoISR()
   else
     range = (micros() - start) >> 2; // don't need any specific value
 }
-#endif
 
 void setup()
 {
-  pinMode(RANGE_1, OUTPUT);
-  pinMode(RANGE_2, OUTPUT);
+  pinMode(ESP_LED, OUTPUT);
   pinMode(TRIG, OUTPUT);      // HC-SR04 trigger
-  digitalWrite(RANGE_1, LOW); // LOW = off (do not turn both on at the same time)
-  digitalWrite(RANGE_2, LOW);
   pinMode(REMOTE, OUTPUT);
-  pinMode(HEARTBEAT, OUTPUT);
-  digitalWrite(REMOTE, HIGH); // watchdog disabled (in case of config)
-  digitalWrite(HEARTBEAT, LOW);
+  digitalWrite(REMOTE, LOW);
 
   digitalWrite(TRIG, LOW);
 
@@ -468,7 +461,7 @@ void setup()
   Serial.println();
   Serial.println();
 
-  wifi.autoConnect("ESP8266");
+  wifi.autoConnect("GDO");
   eeRead(); // don't access EE before WiFi init
 
   Serial.println("");
@@ -476,7 +469,6 @@ void setup()
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
 
-  digitalWrite(HEARTBEAT, HIGH);
   if ( mdns.begin ( "esp8266", WiFi.localIP() ) ) {
     Serial.println ( "MDNS responder started" );
   }
@@ -491,19 +483,11 @@ void setup()
   server.onNotFound ( handleNotFound );
   server.begin();
 
-  digitalWrite(REMOTE, LOW); // enable watchdog
-
   logCounter = 20;
-  digitalWrite(HEARTBEAT, HIGH);
 
   ctSendIP(true, WiFi.localIP());
-
-  digitalWrite(RANGE_2, LOW);   // enable ADC 1
-  digitalWrite(RANGE_1, HIGH);
-
-#ifdef HCSR04
+  dht.setup(DHT_22, DHT::DHT22);
   attachInterrupt(ECHO, echoISR, CHANGE);
-#endif
 }
 
 void loop()
@@ -513,7 +497,6 @@ void loop()
 #define ANA_AVG 24
   static uint16_t vals[2][ANA_AVG];
   static uint8_t ind[2];
-  bool bSkip = false;
   bool bNew;
 
   mdns.update();
@@ -523,54 +506,19 @@ void loop()
   {
     sec_save = second();
 
-#ifndef HCSR04
-    bSkip = true; // skip first read (needs time to start)
-    switch(cnt)
+    doorVal = 0;
+    for(int i = 0; i < ANA_AVG; i++)
+      doorVal += vals[0][i];
+    doorVal /= ANA_AVG;
+    bNew = (doorVal > ee.nDoorThresh) ? true:false;
+    if(bNew != bDoorOpen)
     {
-      case 0: // read 1 (middle header)
-#endif                  // this section reads only IR rangefinder 1
-        doorVal = 0;
-        for(int i = 0; i < ANA_AVG; i++)
-          doorVal += vals[0][i];
-        doorVal /= ANA_AVG;
-        bNew = (doorVal > ee.nDoorThresh) ? true:false;
-        if(bNew != bDoorOpen)
-        {
-            bDoorOpen = bNew;
-            doorOpenTimer = bDoorOpen ? ee.alarmTimeout : 0;
-            ctSendLog(false); // send all changes in door status
-        }
-//        Serial.print("Door: ");
-//        Serial.println(doorVal);
-#ifndef HCSR04
-        digitalWrite(RANGE_1, LOW);   // enable ADC 2
-        digitalWrite(RANGE_2, HIGH);
-        cnt++;
-        tog = 1;
-        break;
-      case 1: // read 2 (right header)
-        cnt++;
-        break;
-      case 2:
-        carVal = 0;
-        for(int i = 0; i < ANA_AVG; i++)
-          carVal += vals[1][i];
-        carVal /= ANA_AVG;
-        bCarIn = (carVal > ee.nCarThresh) ? true:false; // higher is closer
-//        Serial.print("Car: ");
-//        Serial.println(carVal);
-        digitalWrite(RANGE_2, LOW);   // enable ADC 1
-        digitalWrite(RANGE_1, HIGH);
-        cnt++;
-        tog = 0;
-        break;
-      case 3: // 2 seconds each now
-        cnt = 0;
-        break;
+        bDoorOpen = bNew;
+        doorOpenTimer = bDoorOpen ? ee.alarmTimeout : 0;
+        ctSendLog(false); // send all changes in door status
+        eventPush(false);
     }
-#endif
 
-#ifdef HCSR04
     carVal = 0;
     for(int i = 0; i < ANA_AVG; i++)
       carVal += vals[1][i];
@@ -582,8 +530,8 @@ void loop()
     {
       bCarIn = bNew;
       ctSendLog(false);
+      eventPush(false);
     }
-#endif
 
     if (hour_save != hour()) // update our IP and time daily (at 2AM for DST)
     {
@@ -591,6 +539,8 @@ void loop()
       if( (hour_save = hour()) == 2)
         bNeedUpdate = true;
     }
+
+    dht.read();
 
     if(bNeedUpdate)
       if( ctSetIp() )
@@ -614,23 +564,21 @@ void loop()
       if(--doorOpenTimer == 0)
       {
         ctSendLog(true); // Send to server as alert so it can send a Pushbullet
+        eventPush(true);
       }
     }
-    if(bProgram == false)
-      digitalWrite(HEARTBEAT, !digitalRead(HEARTBEAT));
+    digitalWrite(ESP_LED, LOW);
+    delay(50);
+    digitalWrite(ESP_LED, HIGH);
   }
 
   DrawScreen();
 
-  if(!bSkip)
-  {
-    vals[tog][ind[tog]] = analogRead(A0); // read current IR sensor value into current circle buf
-    if(++ind[tog] >= ANA_AVG) ind[tog] = 0;
-  }
+  vals[tog][ind[tog]] = analogRead(A0); // read current IR sensor value into current circle buf
+  if(++ind[tog] >= ANA_AVG) ind[tog] = 0;
 
-#ifdef HCSR04
-    if(range)
-    {
+  if(range)
+  {
       vals[1][ind[1]] = range; // read current IR sensor value into current circle buf
       if(++ind[1] >= ANA_AVG) ind[1] = 0;
       range = 0;
@@ -638,8 +586,7 @@ void loop()
       digitalWrite(TRIG, HIGH); // pulse the rangefinder
       delayMicroseconds(10);
       digitalWrite(TRIG, LOW);
-    }
-#endif
+  }
 }
 
 void DrawScreen()
@@ -650,12 +597,6 @@ void DrawScreen()
 
   if(bDisplay_on)
   {
-    display.setFontScale2x2(false);
-    display.drawString( 8, 22, "Door");
-    display.drawString(80, 22, "Car");
-
-    display.setFontScale2x2(true);
-
     String s = timeFmt(true, true);
     s += "  ";
     s += dayShortStr(weekday());
@@ -670,28 +611,29 @@ void DrawScreen()
     int w = display.drawPropString(ind, 0, s );
     if( --ind < -(w)) ind = 0;
 
-    display.drawPropString( 2, 34, bDoorOpen ? "Open":"Closed" );
-    display.drawPropString(80, 34, bCarIn ? "In":"Out" );
+    display.drawPropString( 2, 23, bDoorOpen ? "Open":"Closed" );
+    display.drawPropString(80, 23, bCarIn ? "In":"Out" );
+
+    float value;
+    value = dht.toFahrenheit( dht.getTemperature() );
+    display.drawPropString(2, 47, String(value, 1) + "]");
+    value = dht.getHumidity();
+    display.drawPropString(64, 47, String(value, 1) + "%");
+
   }
   display.display();
 }
 
 void pulseRemote()
 {
-  if(bProgram == true)
-    return;
   if(bDoorOpen == false) // closing door
   {
     doorOpenTimer = ee.closeTimeout; // set the short timeout 
   }
-
-  for(int i = 0; i < 10; i++)
-  {
-    digitalWrite(REMOTE, HIGH);
-    delay(10);
-    digitalWrite(REMOTE, LOW);
-    delay(10);
-  }
+  Serial.println("pulseRemote");
+  digitalWrite(REMOTE, HIGH);
+  delay(1000);
+  digitalWrite(REMOTE, LOW);
 }
 
 void eeWrite() // write the settings if changed
@@ -736,16 +678,9 @@ uint16_t Fletcher16( uint8_t* data, int count)
 // Send logging data to a server.  This sends JSON formatted data to my local PC, but change to anything needed.
 void ctSendLog(bool bAlert)
 {
-  String s = "{\"door\": ";
-  s += bDoorOpen;
-  s += ", \"car\": ";
-  s += bCarIn;
-  s += ", \"alert\": ";
-  s += bAlert;
-  s += "}";
-  ctSend(String("/s?gdoLog=") + s);
+  String s = dataJson(bAlert);
 
-  eventPush(s);
+  ctSend(String("/s?gdoLog=") + s);
 }
 
 // Send local IP on start for comm, or bad password attempt IP when caught
