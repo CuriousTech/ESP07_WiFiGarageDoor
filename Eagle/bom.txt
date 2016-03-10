@@ -1,13 +1,13 @@
 OLED			0.96" I2C (Ground on pin 1 - eBay)
-DHT22     ebay or anywhere
+DHT22           ebay or anywhere
 Sharp sensor	GP2Y0A02YK0F
 Side tact		SKSCLBE010
-R1-R3 	 10K 0806
+R1-R3           10K 0806
 R4				1K 0805
 R5				5K6 (divider)
 R6				4K7 (Convert Sharp sensors 2.8V to 1.0V)
 C1-C3			0.1uF 0805
 C4				1uF 0805
-Q1			  NPN SOT-23
+Q1			    NPN SOT-23
 USB				Mini USB (common)
-0.1" heade		16 pins needed
+0.1" header		16 pins needed
