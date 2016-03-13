@@ -172,21 +172,26 @@ void WiFiManager::startWebConfig(String ssid) {
     display.print("Server started");
     DEBUG_PRINT("Server started");
 
+    time_t t = time(nullptr);
+    tm *ptm = localtime(&t);
+
     uint8_t s;
-    uint8_t m = minute();
+    uint8_t m = ptm->tm_min;
 
     _timeout = true;
     while(serverLoop() == WM_WAIT) {      //looping
-      if(s != second()) // pulse LED
+      t = time(nullptr);
+      ptm = localtime(&t);
+      if(s != ptm->tm_sec) // pulse LED
       {
-        s = second();
+        s = ptm->tm_sec;
         digitalWrite(2, !digitalRead(2)); // Toggle blue LED
       }
       if(_timeout)
       {
-        if(m != minute() )
+        if(m != ptm->tm_min )
         {
-          m = minute();
+          m = ptm->tm_min;
           int n = WiFi.scanNetworks();
           if(n){
             for (int i = 0; i < n; ++i)
@@ -228,7 +233,7 @@ int WiFiManager::serverLoop()
     }
 
     DEBUG_PRINT("New client");
-    
+
     // Wait for data from client to become available
     while(client.connected() && !client.available()){
         delay(1);
