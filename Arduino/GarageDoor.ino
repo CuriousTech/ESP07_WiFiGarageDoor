@@ -25,6 +25,7 @@ SOFTWARE.
 #include "ssd1306_i2c.h"
 #include "icons.h"
 #include <dht.h>
+#include "time.h"
 
 #include <WiFiClient.h>
 #include <EEPROM.h>
@@ -37,31 +38,11 @@ const char *serverFile = "GarageDoor";    // Creates /iot/GarageDoor.php
 int serverPort = 80;                    // port fwd for fwdip.php
 const char *myHost = "www.yourdomain.com"; // php forwarding/time server
 
-extern "C" {
-  #include "user_interface.h" // Needed for deepSleep which isn't used
-  char* asctime(const tm *t);
-  tm* localtime(const time_t *clock);
-  time_t time(time_t * t);
-}
-
 #define ESP_LED    2  // low turns on ESP blue LED
 #define ECHO      12  // the voltage divider to the bottom corner pin (short R7, don't use R8)
 #define TRIG      13  // the direct pin (bottom 3 pin header)
 #define DHT_22    14
 #define REMOTE    15
-
-struct tm
-{
-  int tm_sec;
-  int tm_min;
-  int tm_hour;
-  int tm_mday;
-  int tm_mon;
-  int tm_year;
-  int tm_wday;
-  int tm_yday;
-  int tm_isdst;
-};
 
 uint32_t lastIP;
 int nWrongPass;
