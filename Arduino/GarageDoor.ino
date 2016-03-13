@@ -22,10 +22,8 @@ SOFTWARE.
 */
 
 #include <Wire.h>
-#include <OneWire.h>
 #include "ssd1306_i2c.h"
 #include "icons.h"
-#include <Time.h>
 #include <dht.h>
 
 #include <WiFiClient.h>
@@ -41,6 +39,9 @@ const char *myHost = "www.yourdomain.com"; // php forwarding/time server
 
 extern "C" {
   #include "user_interface.h" // Needed for deepSleep which isn't used
+  char* asctime(const tm *t);
+  tm* localtime(const time_t *clock);
+  time_t time(time_t * t);
 }
 
 #define ESP_LED    2  // low turns on ESP blue LED
@@ -49,18 +50,28 @@ extern "C" {
 #define DHT_22    14
 #define REMOTE    15
 
+struct tm
+{
+  int tm_sec;
+  int tm_min;
+  int tm_hour;
+  int tm_mday;
+  int tm_mon;
+  int tm_year;
+  int tm_wday;
+  int tm_yday;
+  int tm_isdst;
+};
+
 uint32_t lastIP;
 int nWrongPass;
 
 SSD1306 display(0x3c, 5, 4); // Initialize the oled display for address 0x3c, sda=5, sdc=4
 bool bDisplay_on = true;
-bool bNeedUpdate = true;
 
 WiFiManager wifi(0);  // AP page:  192.168.4.1
 extern MDNSResponder mdns;
 ESP8266WebServer server( serverPort );
-#define CLIENTS 4
-WiFiClient eventClient[CLIENTS];
 
 DHT dht;
 
@@ -70,30 +81,103 @@ struct eeSet // EEPROM backed data
 {
   uint16_t size;          // if size changes, use defauls
   uint16_t sum;           // if sum is diiferent from memory struct, write
-  char     dataServer[64];
-  uint8_t  dataServerPort; // may be modified by listener (dataHost)
   int8_t   tz;            // Timezone offset from your server
-  uint16_t interval;
+  uint8_t  dst;
   uint16_t nCarThresh;
   uint16_t nDoorThresh;
   uint16_t alarmTimeout;
   uint16_t closeTimeout;
+  int8_t   tempOffset;
 };
 eeSet ee = { sizeof(eeSet), 0xAAAA,
-  "192.168.0.189", 83,  2, 60*60, // dataServer, port, TZ, interval
-  500, 500,       // thresholds
+  -5, 0, // TZ, dst
+  500, 900,       // thresholds
   5*60,          // alarmTimeout
-  30            // closeTimeout
+  30,            // closeTimeout
+  0       // adjust for error
 };
 
-uint8_t hour_save, sec_save;
 int ee_sum; // sum for checking if any setting has changed
 bool bDoorOpen;
 bool bCarIn;
-int logCounter;
 uint16_t doorVal;
 uint16_t carVal;
 uint16_t doorOpenTimer;
+
+#define CLIENTS 4
+class eventClient
+{
+public:
+  eventClient()
+  {
+  }
+
+  void set(WiFiClient cl, int t)
+  {
+    m_client = cl;
+    m_interval = t;
+    m_timer = 0;
+    m_keepAlive = 10;
+    m_client.print(":ok\n");
+    push(false, 0);
+  }
+
+  bool inUse()
+  {
+    return m_client.connected();
+  }
+
+  void push(bool bAlert, long ip)
+  {
+    if(m_client.connected() == 0)
+      return;
+    String s = dataJson(bAlert, ip);
+    m_client.print("event: state\n");
+    m_client.println("data: " + s + "\n");
+    m_keepAlive = 11;
+    m_timer = 0;
+  }
+
+  void beat()
+  {
+    if(m_client.connected() == 0)
+      return;
+
+    if(++m_timer >= m_interval)
+      push(false, 0);
+ 
+    if(--m_keepAlive <= 0)
+    {
+      m_client.print("\n");
+      m_keepAlive = 10;
+    }
+  }
+
+private:
+  String dataJson(bool bAlert, long ip)
+  {
+    String s = "{\"door\": ";
+    s += bDoorOpen;
+    s += ",\"car\": ";
+    s += bCarIn;
+    s += ",\"alert\": ";
+    s += bAlert;
+    s += ",\"temp\": \"";
+    s += String(adjTemp(), 1);
+    s += "\",\"rh\": \"";
+    s += String(dht.getHumidity(), 1);
+    s += "\",\"ip\":\"";
+    s += ipString(ip);
+    s += "\"}";
+    return s;
+  }
+
+  WiFiClient m_client;
+  int8_t m_keepAlive;
+  uint16_t m_interval;
+  uint16_t m_timer;
+};
+eventClient ec[CLIENTS];
 
 String ipString(IPAddress ip) // Convert IP to string
 {
@@ -112,7 +196,6 @@ bool parseArgs()
   char temp[100];
   String password;
   int val;
-  bool bUpdateTime = false;
   bool bRemote = false;
   bool ipSet = false;
   eeSet save;
@@ -125,52 +208,41 @@ bool parseArgs()
     String s = wifi.urldecode(temp);
     Serial.println( i + " " + server.argName ( i ) + ": " + s);
     bool which = (tolower(server.argName(i).charAt(1) ) == 'n') ? 1:0;
-
+    int val = s.toInt();
+ 
     switch( server.argName(i).charAt(0)  )
     {
       case 'k': // key
           password = s;
           break;
       case 'Z': // TZ
-          ee.tz = s.toInt();
-          bUpdateTime = true; // refresh current time
+          ee.tz = val;
+          resetClock();
           break;
       case 'C': // close timeout (set a bit higher than it takes to close)
-          ee.closeTimeout = s.toInt();
+          ee.closeTimeout = val;
           break;
       case 'T': // alarm timeout
-          ee.alarmTimeout = s.toInt();
+          ee.alarmTimeout = val;
           break;
-      case 'i': // ?ip=server&port=80&int=60&key=password (htTp://192.168.0.197:84/s?ip=192.168.0.189&port=83&int=1800&Timeout=600&key=password)
-          if(which) // interval
-          {
-            ee.interval = s.toInt();
-          }
-          else // ip
-          {
-            s.toCharArray(ee.dataServer, 64); // todo: parse into domain/URI
-            Serial.print("Server ");
-            Serial.println(ee.dataServer);
-           }
-           break;
       case 'L':           // Ex set car=290, door=500 : hTtp://192.168.0.190:84?Ln=500&Ld=290&key=password
            if(which) // Ln
            {
-             ee.nDoorThresh = s.toInt();
+             ee.nDoorThresh = val;
            }
            else // Ld
            {
-             ee.nCarThresh = s.toInt();
+             ee.nCarThresh = val;
            }
            break;
+      case 'F': // temp offset
+          ee.tempOffset = val;
+          break;
       case 'D': // Door (pulse the output)
-            bRemote = true;
-            break;
-      case 'p': // port
-          ee.dataServerPort = s.toInt();
+          bRemote = true;
           break;
       case 'O': // OLED
-          bDisplay_on = s.toInt() ? true:false;
+          bDisplay_on = val ? true:false;
           break;
     }
   }
@@ -185,7 +257,7 @@ bool parseArgs()
       nWrongPass <<= 1;
     if(ip != lastIP)  // if different IP drop it down
        nWrongPass = 10;
-    ctSendIP(false, ip); // log attempts
+    eventPush(false, ip); // log attempts
     bRemote = false;
   }
 
@@ -194,8 +266,6 @@ bool parseArgs()
   lastIP = ip;
   if(bRemote)
      pulseRemote();
-  if(bUpdateTime)
-    ctSetIp();
 }
 
 void handleRoot() // Main webpage interface
@@ -212,7 +282,7 @@ void handleRoot() // Main webpage interface
     "<script type=\"text/javascript\">"
     "function startEvents()"
     "{"
-      "eventSource = new EventSource(\"events\");"
+      "eventSource = new EventSource(\"events?i=10\");"
       "eventSource.addEventListener('open', function(e){},false);"
       "eventSource.addEventListener('error', function(e){},false);"
       "eventSource.addEventListener('state',function(e){"
@@ -228,7 +298,13 @@ void handleRoot() // Main webpage interface
     "function setDoor(){"
     "$.post(\"s\", { D: 0, key: document.all.myKey.value })"
     "}"
-    "</script>"
+    "setInterval(timer,1000);"
+    "t=";
+    page += time(nullptr) - (ee.tz * 3600) - (ee.dst * 3600); // set to GMT
+    page +="000;function timer(){" // add 000 for ms
+          "t+=1000;d=new Date(t);"
+          "document.all.time.innerHTML=d.toLocaleTimeString()}"
+      "</script>"
 
       "<body onload=\"{"
       "key = localStorage.getItem('key'); if(key!=null) document.getElementById('myKey').value = key;"
@@ -237,9 +313,9 @@ void handleRoot() // Main webpage interface
 
     page += "<h3>WiFi Garage Door Opener </h3>"
             "<table align=\"right\">"
-            "<tr><td>";
+            "<tr><td><p id=\"time\">";
     page += timeFmt(true, true);
-    page += "</td><td>";
+    page += "</p></td><td>";
     page += "<input type=\"button\" value=\"Open\" id=\"doorBtn\" onClick=\"{setDoor()}\">";
     page += "</td></tr>"
           "<tr><td align=\"center\">Garage</td>"
@@ -255,9 +331,9 @@ void handleRoot() // Main webpage interface
     page += "</div></td></tr>"
             "<tr><td>" // unused row
             "<div id=\"temp\">";
-    page +=  dht.toFahrenheit( dht.getTemperature() );
+    page +=  String(adjTemp(), 1);
     page += "&degF</div></td><td><div id=\"rh\">";
-    page += dht.getHumidity();
+    page += String(dht.getHumidity(), 1);
     page += "%</div></td></tr><tr><td align=\"center\">Timeout</td><td align=\"center\">Timezone</td></tr>"
             "<tr><td>";
     page += valButton("C", String(ee.closeTimeout) );
@@ -271,6 +347,12 @@ void handleRoot() // Main webpage interface
     page += "</small><br></body></html>";
 
     server.send ( 200, "text/html", page );
+}
+
+float adjTemp()
+{
+  int t = (dht.toFahrenheit( dht.getTemperature() ) * 10) + ee.tempOffset;
+  return ((float)t / 10);
 }
 
 String button(String id, String text) // Up/down buttons
@@ -303,22 +385,29 @@ String valButton(String id, String val)
 // Set sec to 60 to remove seconds
 String timeFmt(bool do_sec, bool do_12)
 {
+  time_t t = time(nullptr);
+  tm *ptm = localtime(&t);
+
+  uint8_t h = ptm->tm_hour;
+  if(h == 0) h = 12;
+  else if( h > 12) h -= 12;
+ 
   String r = "";
-  if(hourFormat12() <10) r = " ";
-  r += hourFormat12();
+  if(h <10) r = " ";
+  r += h;
   r += ":";
-  if(minute() < 10) r += "0";
-  r += minute();
+  if(ptm->tm_min < 10) r += "0";
+  r += ptm->tm_min;
   if(do_sec)
   {
     r += ":";
-    if(second() < 10) r += "0";
-    r += second();
+    if(ptm->tm_sec < 10) r += "0";
+    r += ptm->tm_sec;
     r += " ";
   }
   if(do_12)
   {
-      r += isPM() ? "PM":"AM";
+      r += (ptm->tm_hour > 12) ? "PM":"AM";
   }
   return r;
 }
@@ -352,64 +441,54 @@ void handleJson()
   page += bCarIn;
   page += ", \"alarmTimeout\": ";
   page += ee.alarmTimeout;
+  page += ", \"closeTimeout\": ";
+  page += ee.closeTimeout;
   page += "}";
 
-  server.send ( 200, "text/json", page );
+  server.send( 200, "text/json", page );
 }
 
-// event streamer (assume keep-alive)
+// event streamer (assume keep-alive) (esp8266 2.1.0 can't handle this)
 void handleEvents()
 {
+  char temp[100];
   Serial.println("handleEvents");
-  server.send( 200, "text/event-stream", "" );
-
-  for(int i = 0; i < CLIENTS; i++)
-    if(eventClient[i].connected() == 0)
+  uint16_t interval = 60; // default interval
+ 
+  for ( uint8_t i = 0; i < server.args(); i++ ) {
+    server.arg(i).toCharArray(temp, 100);
+    String s = wifi.urldecode(temp);
+    Serial.println( i + " " + server.argName ( i ) + ": " + s);
+    int val = s.toInt();
+ 
+    switch( server.argName(i).charAt(0)  )
     {
-      eventClient[i] = server.client();
-      eventClient[i].print(":ok\n");
+      case 'i': // interval
+          interval = val;
+          break;
+    }
+  }
+
+  server.send( 200, "text/event-stream", "" );
+  
+  for(int i = 0; i < CLIENTS; i++) // find an unused client
+    if(!ec[i].inUse())
+    {
+      ec[i].set(server.client(), interval);
       break;
     }
 }
 
 void eventHeartbeat()
 {
-  static uint8_t cnt = 0;
-  if(++cnt < 10) // let's try 10 seconds
-    return;
-  cnt = 0;
-
   for(int i = 0; i < CLIENTS; i++)
-    if(eventClient[i].connected())
-//     eventClient[i].print("\n");
-      eventPush(false);
+    ec[i].beat();
 }
 
-void eventPush(bool bAlert)
+void eventPush(bool bAlert, long ip) // push to all
 {
-  String s = dataJson(bAlert);
   for(int i = 0; i < CLIENTS; i++)
-    if(eventClient[i].connected())
-    {
-      eventClient[i].print("event: state\n");
-      eventClient[i].println("data: " + s + "\n");
-    }
-}
-
-String dataJson(bool bAlert)
-{
-  String s = "{\"door\": ";
-  s += bDoorOpen;
-  s += ",\"car\": ";
-  s += bCarIn;
-  s += ",\"alert\": ";
-  s += bAlert;
-  s += ",\"temp\": \"";
-  s += dht.toFahrenheit( dht.getTemperature() );
-  s += "\",\"rh\": \"";
-  s += dht.getHumidity();
-  s += "\"}";
-  return s;
+    ec[i].push(bAlert, ip);
 }
 
 void handleNotFound() {
@@ -439,6 +518,11 @@ void echoISR()
     start = micros();
   else
     range = (micros() - start) >> 2; // don't need any specific value
+}
+
+void resetClock()
+{
+  configTime((ee.tz * 3600) + (ee.dst * 3600), 0, "0.us.pool.ntp.org", "pool.ntp.org", "time.nist.gov");
 }
 
 void setup()
@@ -482,29 +566,42 @@ void setup()
 //  } );
   server.onNotFound ( handleNotFound );
   server.begin();
+  resetClock();
 
-  logCounter = 20;
-
-  ctSendIP(true, WiFi.localIP());
   dht.setup(DHT_22, DHT::DHT22);
   attachInterrupt(ECHO, echoISR, CHANGE);
+  ctSetIp();
 }
 
 void loop()
 {
+  static uint8_t hour_save, sec_save;
   static uint8_t tog = 0;
   static uint8_t cnt = 0;
 #define ANA_AVG 24
   static uint16_t vals[2][ANA_AVG];
   static uint8_t ind[2];
+  static float lastTemp;
+  static float lastRh;
   bool bNew;
+  static bool dstSet = false;
 
   mdns.update();
   server.handleClient();
 
-  if(sec_save != second()) // only do stuff once per second (loop is maybe 20-30 Hz)
+  time_t t = time(NULL);
+  tm *ptm = localtime(&t);
+
+  if(sec_save != ptm->tm_sec) // only do stuff once per second (loop is maybe 20-30 Hz)
   {
-    sec_save = second();
+    sec_save = ptm->tm_sec;
+
+    if(dstSet == false && ptm->tm_year > 100)
+    {
+      DST();
+      resetClock();
+      dstSet = true;
+    }
 
     doorVal = 0;
     for(int i = 0; i < ANA_AVG; i++)
@@ -515,8 +612,7 @@ void loop()
     {
         bDoorOpen = bNew;
         doorOpenTimer = bDoorOpen ? ee.alarmTimeout : 0;
-        ctSendLog(false); // send all changes in door status
-        eventPush(false);
+        eventPush(false, 0);
     }
 
     carVal = 0;
@@ -529,42 +625,38 @@ void loop()
     if(bNew != bCarIn)
     {
       bCarIn = bNew;
-      ctSendLog(false);
-      eventPush(false);
+      eventPush(false, 0);
     }
 
-    if (hour_save != hour()) // update our IP and time daily (at 2AM for DST)
+    if (hour_save != ptm->tm_hour) // update our IP and time daily (at 2AM for DST)
     {
-      display.init();
-      if( (hour_save = hour()) == 2)
-        bNeedUpdate = true;
+      hour_save = ptm->tm_hour;
+      if(hour_save == 2)
+      {
+        DST();
+        resetClock();
+      }
+      eeWrite(); // update EEPROM if needed while we're at it (give user time to make many adjustments)
     }
 
     dht.read();
 
-    if(bNeedUpdate)
-      if( ctSetIp() )
-        bNeedUpdate = false;
+    if(adjTemp() != lastTemp || dht.getHumidity() != lastRh)
+    {
+      lastTemp = adjTemp();
+      lastRh = dht.getHumidity();
+      eventPush(false, 0);
+    }
 
     if(nWrongPass)
       nWrongPass--;
 
-    if(logCounter)
-    {
-      if(--logCounter == 0)
-      {
-        logCounter = ee.interval;
-        ctSendLog(false); // no really needed, but as a heartbeat
-        eeWrite(); // update EEPROM if needed while we're at it (give user time to make many adjustments)
-      }
-    }
     eventHeartbeat();
     if(doorOpenTimer)
     {
       if(--doorOpenTimer == 0)
       {
-        ctSendLog(true); // Send to server as alert so it can send a Pushbullet
-        eventPush(true);
+        eventPush(true, 0);
       }
     }
     digitalWrite(ESP_LED, LOW);
@@ -572,7 +664,7 @@ void loop()
     digitalWrite(ESP_LED, HIGH);
   }
 
-  DrawScreen();
+  DrawScreen(ptm);
 
   vals[tog][ind[tog]] = analogRead(A0); // read current IR sensor value into current circle buf
   if(++ind[tog] >= ANA_AVG) ind[tog] = 0;
@@ -589,21 +681,24 @@ void loop()
   }
 }
 
-void DrawScreen()
+void DrawScreen(tm *ptm)
 {
   static int16_t ind;
   // draw the screen here
   display.clear();
 
+  const char days[7][4] = {"Sun","Mon","Tue","Wed","Thr","Fri","Sat"};
+  const char months[12][4] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
+
   if(bDisplay_on)
   {
     String s = timeFmt(true, true);
     s += "  ";
-    s += dayShortStr(weekday());
+    s += days[ptm->tm_wday];
     s += " ";
-    s += String(day());
+    s += String(ptm->tm_mday);
     s += " ";
-    s += monthShortStr(month());
+    s += months[ptm->tm_mon];
     s += "  ";
     int len = s.length();
     s = s + s;
@@ -614,11 +709,8 @@ void DrawScreen()
     display.drawPropString( 2, 23, bDoorOpen ? "Open":"Closed" );
     display.drawPropString(80, 23, bCarIn ? "In":"Out" );
 
-    float value;
-    value = dht.toFahrenheit( dht.getTemperature() );
-    display.drawPropString(2, 47, String(value, 1) + "]");
-    value = dht.getHumidity();
-    display.drawPropString(64, 47, String(value, 1) + "%");
+    display.drawPropString(2, 47, String(adjTemp(), 1) + "]");
+    display.drawPropString(64, 47, String(dht.getHumidity(), 1) + "%");
 
   }
   display.display();
@@ -675,62 +767,6 @@ uint16_t Fletcher16( uint8_t* data, int count)
    return (sum2 << 8) | sum1;
 }
 
-// Send logging data to a server.  This sends JSON formatted data to my local PC, but change to anything needed.
-void ctSendLog(bool bAlert)
-{
-  String s = dataJson(bAlert);
-
-  ctSend(String("/s?gdoLog=") + s);
-}
-
-// Send local IP on start for comm, or bad password attempt IP when caught
-void ctSendIP(bool local, uint32_t ip)
-{
-  String s = local ? "/s?gdoIP=\"" : "/s?gdoHackIP=\"";
-  s += ipString(ip);
-
-  if(local)
-  {
-    s += ":";
-    s += serverPort;
-  }
-  s += "\"";
-
-  ctSend(s);
-}
-
-// Send stuff to a server.
-void ctSend(String s)
-{
-  if(ee.dataServer[0] == 0) return;
-  WiFiClient client;
-  if (!client.connect(ee.dataServer, ee.dataServerPort)) {
-    Serial.println("dataServer connection failed");
-    Serial.println(ee.dataServer);
-    Serial.println(ee.dataServerPort);
-    delay(100);
-    return;
-  }
-  Serial.println("dataServer connected");
-
-  // This will send the request to the server
-  client.print(String("GET ") + s + " HTTP/1.1\r\n" +
-               "Host: " + ee.dataServer + "\r\n" + 
-               "Connection: close\r\n\r\n");
-
-  delay(10);
- 
-  // Read all the lines of the reply from server and print them to Serial
-  while(client.available()){
-    String line = client.readStringUntil('\r');
-    Serial.print(line);
-  }
-
-  Serial.println();
-//  Serial.println("closing connection.");
-  client.stop();
-}
-
 // Setup a php script on my server to send traffic here from /iot/waterbed.php, plus sync time
 // PHP script: https://github.com/CuriousTech/ESP07_Multi/blob/master/fwdip.php
 bool ctSetIp()
@@ -762,37 +798,26 @@ bool ctSetIp()
     if(line.startsWith("IP:")) // I don't need my global IP
     {
     }
-    else if(line.startsWith("Time:")) // Time from the server in a simple format
-    {
-      tmElements_t tm;
-      tm.Year   = line.substring(6,10).toInt() - 1970;
-      tm.Month  = line.substring(11,13).toInt();
-      tm.Day    = line.substring(14,16).toInt();
-      tm.Hour   = line.substring(17,19).toInt();
-      tm.Minute = line.substring(20,22).toInt();
-      tm.Second = line.substring(23,25).toInt();
-
-      unsigned long t = makeTime(tm);
-      t += 3600 * (ee.tz + DST()); // offset in hours
-      setTime(t);  // set time
-
-      Serial.println("Time updated");
-    }
   }
  
   client.stop();
   return true;
 }
 
-uint8_t DST() // 2016 starts 2AM Mar 13, ends Nov 6
+void DST() // 2016 starts 2AM Mar 13, ends Nov 6
 {
-  uint8_t m = month();
-  int8_t d = day();
-  int8_t dow = weekday();
-  if ((m  >  3 && m < 11 ) || 
-      (m ==  3 && d >= 8 && dow == 0 && hour() >= 2) ||  // DST starts 2nd Sunday of March;  2am
-      (m == 11 && d <  8 && dow >  0) ||
-      (m == 11 && d <  8 && dow == 0 && hour() < 2))   // DST ends 1st Sunday of November; 2am
-    return 1;
- return 0;
+  time_t t = time(nullptr);
+  tm *ptm = localtime(&t);
+
+  uint8_t m = ptm->tm_mon; // 0-11
+  int8_t d = ptm->tm_mday; // 1-30
+  int8_t dow = ptm->tm_wday; // 0-6
+
+  if ((m  >  2 && m < 10 ) || 
+      (m ==  2 && d >= 8 && dow == 0 && ptm->tm_hour >= 2) ||  // DST starts 2nd Sunday of March;  2am
+      (m == 10 && d <  8 && dow >  0) ||
+      (m == 10 && d <  8 && dow == 0 && ptm->tm_hour < 2))   // DST ends 1st Sunday of November; 2am
+   ee.dst = 1;
+ else
+   ee.dst = 0;
 }
