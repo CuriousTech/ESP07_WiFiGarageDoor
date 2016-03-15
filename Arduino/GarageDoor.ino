@@ -32,6 +32,7 @@ SOFTWARE.
 #include <ESP8266mDNS.h>
 #include "WiFiManager.h"
 #include <ESP8266WebServer.h>
+#include "event.h"
 
 const char *controlPassword = "password"; // device password for modifying any settings
 const char *serverFile = "GarageDoor";    // Creates /iot/GarageDoor.php
@@ -85,80 +86,21 @@ uint16_t doorVal;
 uint16_t carVal;
 uint16_t doorOpenTimer;
 
-#define CLIENTS 4
-class eventClient
+eventHandler event(dataJson);
+
+String dataJson()
 {
-public:
-  eventClient()
-  {
-  }
-
-  void set(WiFiClient cl, int t)
-  {
-    m_client = cl;
-    m_interval = t;
-    m_timer = 0;
-    m_keepAlive = 10;
-    m_client.print(":ok\n");
-    push(false, 0);
-  }
-
-  bool inUse()
-  {
-    return m_client.connected();
-  }
-
-  void push(bool bAlert, long ip)
-  {
-    if(m_client.connected() == 0)
-      return;
-    String s = dataJson(bAlert, ip);
-    m_client.print("event: state\n");
-    m_client.println("data: " + s + "\n");
-    m_keepAlive = 11;
-    m_timer = 0;
-  }
-
-  void beat()
-  {
-    if(m_client.connected() == 0)
-      return;
-
-    if(++m_timer >= m_interval)
-      push(false, 0);
- 
-    if(--m_keepAlive <= 0)
-    {
-      m_client.print("\n");
-      m_keepAlive = 10;
-    }
-  }
-
-private:
-  String dataJson(bool bAlert, long ip)
-  {
     String s = "{\"door\": ";
     s += bDoorOpen;
     s += ",\"car\": ";
     s += bCarIn;
-    s += ",\"alert\": ";
-    s += bAlert;
     s += ",\"temp\": \"";
     s += String(adjTemp(), 1);
     s += "\",\"rh\": \"";
     s += String(dht.getHumidity(), 1);
-    s += "\",\"ip\":\"";
-    s += ipString(ip);
     s += "\"}";
     return s;
-  }
-
-  WiFiClient m_client;
-  int8_t m_keepAlive;
-  uint16_t m_interval;
-  uint16_t m_timer;
-};
-eventClient ec[CLIENTS];
+}
 
 String ipString(IPAddress ip) // Convert IP to string
 {
@@ -238,7 +180,7 @@ bool parseArgs()
       nWrongPass <<= 1;
     if(ip != lastIP)  // if different IP drop it down
        nWrongPass = 10;
-    eventPush(false, ip); // log attempts
+    event.print("HackIP=" + ipString(ip) ); // log attempts
     bRemote = false;
   }
 
@@ -266,6 +208,7 @@ void handleRoot() // Main webpage interface
       "eventSource = new EventSource(\"events?i=10\");"
       "eventSource.addEventListener('open', function(e){},false);"
       "eventSource.addEventListener('error', function(e){},false);"
+      "eventSource.addEventListener('alert', function(e){alert(e.data)},false);"
       "eventSource.addEventListener('state',function(e){"
         "d = JSON.parse(e.data);"
         "document.all.car.innerHTML = d.car?\"IN\":\"OUT\";"
@@ -273,7 +216,6 @@ void handleRoot() // Main webpage interface
         "document.all.doorBtn.value = d.door?\"Close\":\"Open\";"
         "document.all.temp.innerHTML = d.temp+\"&degF\";"
         "document.all.rh.innerHTML = d.rh+'%';"
-        "if(d.alert) alert(\"Door failed to close!\");"
       "},false)"
     "}"
     "function setDoor(){"
@@ -451,25 +393,7 @@ void handleEvents()
   }
 
   server.send( 200, "text/event-stream", "" );
-  
-  for(int i = 0; i < CLIENTS; i++) // find an unused client
-    if(!ec[i].inUse())
-    {
-      ec[i].set(server.client(), interval);
-      break;
-    }
-}
-
-void eventHeartbeat()
-{
-  for(int i = 0; i < CLIENTS; i++)
-    ec[i].beat();
-}
-
-void eventPush(bool bAlert, long ip) // push to all
-{
-  for(int i = 0; i < CLIENTS; i++)
-    ec[i].push(bAlert, ip);
+  event.set(server.client(), interval);
 }
 
 void handleNotFound() {
@@ -593,7 +517,7 @@ void loop()
     {
         bDoorOpen = bNew;
         doorOpenTimer = bDoorOpen ? ee.alarmTimeout : 0;
-        eventPush(false, 0);
+        event.push();
     }
 
     carVal = 0;
@@ -606,7 +530,7 @@ void loop()
     if(bNew != bCarIn)
     {
       bCarIn = bNew;
-      eventPush(false, 0);
+      event.push();
     }
 
     if (hour_save != ptm->tm_hour) // update our IP and time daily (at 2AM for DST)
@@ -626,18 +550,18 @@ void loop()
     {
       lastTemp = adjTemp();
       lastRh = dht.getHumidity();
-      eventPush(false, 0);
+      event.push();
     }
 
     if(nWrongPass)
       nWrongPass--;
 
-    eventHeartbeat();
+    event.heartbeat();
     if(doorOpenTimer)
     {
       if(--doorOpenTimer == 0)
       {
-        eventPush(true, 0);
+        event.alert("Door not closed");
       }
     }
     digitalWrite(ESP_LED, LOW);
