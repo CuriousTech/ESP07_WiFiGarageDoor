@@ -21,11 +21,13 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+// Build with Arduino IDE 1.6.8, esp8266 SDK 2.2.0
+
 #include <Wire.h>
 #include "ssd1306_i2c.h"
 #include "icons.h"
 #include <dht.h>
-#include "time.h"
+#include <TimeLib.h>
 
 #include <WiFiClient.h>
 #include <EEPROM.h>
@@ -33,11 +35,10 @@ SOFTWARE.
 #include "WiFiManager.h"
 #include <ESP8266WebServer.h>
 #include "event.h"
-
+ 
 const char *controlPassword = "password"; // device password for modifying any settings
 const char *serverFile = "GarageDoor";    // Creates /iot/GarageDoor.php
-int serverPort = 80;                    // port fwd for fwdip.php
-const char *myHost = "www.yourdomain.com"; // php forwarding/time server
+int serverPort = 84;                    // port fwd for fwdip.php
 
 #define ESP_LED    2  // low turns on ESP blue LED
 #define ECHO      12  // the voltage divider to the bottom corner pin (short R7, don't use R8)
@@ -54,6 +55,11 @@ bool bDisplay_on = true;
 WiFiManager wifi(0);  // AP page:  192.168.4.1
 extern MDNSResponder mdns;
 ESP8266WebServer server( serverPort );
+const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
+byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
+WiFiUDP Udp;
+bool bNeedUpdate;
+uint8_t  dst;           // current dst
 
 DHT dht;
 
@@ -86,8 +92,6 @@ uint16_t doorVal;
 uint16_t carVal;
 uint16_t doorOpenTimer;
 
-eventHandler event(dataJson);
-
 String dataJson()
 {
     String s = "{\"door\": ";
@@ -101,6 +105,8 @@ String dataJson()
     s += "\"}";
     return s;
 }
+
+eventHandler event(dataJson);
 
 String ipString(IPAddress ip) // Convert IP to string
 {
@@ -140,7 +146,7 @@ bool parseArgs()
           break;
       case 'Z': // TZ
           ee.tz = val;
-          resetClock();
+          getUdpTime();
           break;
       case 'C': // close timeout (set a bit higher than it takes to close)
           ee.closeTimeout = val;
@@ -205,7 +211,7 @@ void handleRoot() // Main webpage interface
     "<script type=\"text/javascript\">"
     "function startEvents()"
     "{"
-      "eventSource = new EventSource(\"events?i=10\");"
+      "eventSource = new EventSource(\"events?i=60&p=1\");"
       "eventSource.addEventListener('open', function(e){},false);"
       "eventSource.addEventListener('error', function(e){},false);"
       "eventSource.addEventListener('alert', function(e){alert(e.data)},false);"
@@ -223,7 +229,7 @@ void handleRoot() // Main webpage interface
     "}"
     "setInterval(timer,1000);"
     "t=";
-    page += time(nullptr) - (ee.tz * 3600) - (ee.dst * 3600); // set to GMT
+    page += now() - ((ee.tz + dst) * 3600); // set to GMT
     page +="000;function timer(){" // add 000 for ms
           "t+=1000;d=new Date(t);"
           "document.all.time.innerHTML=d.toLocaleTimeString()}"
@@ -305,32 +311,25 @@ String valButton(String id, String val)
   return s;
 }
 
-// Set sec to 60 to remove seconds
-String timeFmt(bool do_sec, bool do_12)
+// Time in hh:mm[:ss][AM/PM]
+String timeFmt(bool do_sec, bool do_M)
 {
-  time_t t = time(nullptr);
-  tm *ptm = localtime(&t);
-
-  uint8_t h = ptm->tm_hour;
-  if(h == 0) h = 12;
-  else if( h > 12) h -= 12;
- 
   String r = "";
-  if(h <10) r = " ";
-  r += h;
+  if(hourFormat12() < 10) r = " ";
+  r += hourFormat12();
   r += ":";
-  if(ptm->tm_min < 10) r += "0";
-  r += ptm->tm_min;
+  if(minute() < 10) r += "0";
+  r += minute();
   if(do_sec)
   {
     r += ":";
-    if(ptm->tm_sec < 10) r += "0";
-    r += ptm->tm_sec;
+    if(second() < 10) r += "0";
+    r += second();
     r += " ";
   }
-  if(do_12)
+  if(do_M)
   {
-      r += (ptm->tm_hour > 12) ? "PM":"AM";
+      r += isPM() ? "PM":"AM";
   }
   return r;
 }
@@ -366,7 +365,11 @@ void handleJson()
   page += ee.alarmTimeout;
   page += ", \"closeTimeout\": ";
   page += ee.closeTimeout;
-  page += "}";
+  page += ",\"temp\": \"";
+  page += String(adjTemp(), 1);
+  page += "\",\"rh\": \"";
+  page += String(dht.getHumidity(), 1);
+  page += "\"}";
 
   server.send( 200, "text/json", page );
 }
@@ -377,23 +380,34 @@ void handleEvents()
   char temp[100];
   Serial.println("handleEvents");
   uint16_t interval = 60; // default interval
- 
+  uint8_t nType = 0;
+
   for ( uint8_t i = 0; i < server.args(); i++ ) {
     server.arg(i).toCharArray(temp, 100);
     String s = wifi.urldecode(temp);
-    Serial.println( i + " " + server.argName ( i ) + ": " + s);
+//    Serial.println( i + " " + server.argName ( i ) + ": " + s);
     int val = s.toInt();
  
     switch( server.argName(i).charAt(0)  )
     {
       case 'i': // interval
-          interval = val;
-          break;
+        interval = val;
+        break;
+      case 'p': // push
+        nType = 1;
+        break;
+      case 'c': // critical
+        nType = 2;
+        break;
     }
   }
 
-  server.send( 200, "text/event-stream", "" );
-  event.set(server.client(), interval);
+  event.set(server.client(), interval, nType); // copying the client before the send makes it work with SDK 2.2.0
+  String content = "HTTP/1.1 200 OK\r\n"
+      "Connection: keep-alive\r\n"
+      "Access-Control-Allow-Origin: *\r\n"
+      "Content-Type: text/event-stream\r\n\r\n";
+  server.sendContent(content);
 }
 
 void handleNotFound() {
@@ -423,11 +437,6 @@ void echoISR()
     start = micros();
   else
     range = (micros() - start) >> 2; // don't need any specific value
-}
-
-void resetClock()
-{
-  configTime((ee.tz * 3600) + (ee.dst * 3600), 0, "0.us.pool.ntp.org", "pool.ntp.org", "time.nist.gov");
 }
 
 void setup()
@@ -471,11 +480,10 @@ void setup()
 //  } );
   server.onNotFound ( handleNotFound );
   server.begin();
-  resetClock();
 
   dht.setup(DHT_22, DHT::DHT22);
   attachInterrupt(ECHO, echoISR, CHANGE);
-  ctSetIp();
+  getUdpTime();
 }
 
 void loop()
@@ -489,24 +497,16 @@ void loop()
   static float lastTemp;
   static float lastRh;
   bool bNew;
-  static bool dstSet = false;
 
   mdns.update();
   server.handleClient();
 
-  time_t t = time(NULL);
-  tm *ptm = localtime(&t);
+  if(bNeedUpdate)
+    checkUdpTime();
 
-  if(sec_save != ptm->tm_sec) // only do stuff once per second (loop is maybe 20-30 Hz)
+  if(sec_save != second()) // only do stuff once per second (loop is maybe 20-30 Hz)
   {
-    sec_save = ptm->tm_sec;
-
-    if(dstSet == false && ptm->tm_year > 100)
-    {
-      DST();
-      resetClock();
-      dstSet = true;
-    }
+    sec_save = second();
 
     doorVal = 0;
     for(int i = 0; i < ANA_AVG; i++)
@@ -533,13 +533,12 @@ void loop()
       event.push();
     }
 
-    if (hour_save != ptm->tm_hour) // update our IP and time daily (at 2AM for DST)
+    if (hour_save != hour()) // update our IP and time daily (at 2AM for DST)
     {
-      hour_save = ptm->tm_hour;
+      hour_save = hour();
       if(hour_save == 2)
       {
-        DST();
-        resetClock();
+        getUdpTime();
       }
       eeWrite(); // update EEPROM if needed while we're at it (give user time to make many adjustments)
     }
@@ -550,13 +549,14 @@ void loop()
     {
       lastTemp = adjTemp();
       lastRh = dht.getHumidity();
-      event.push();
+      event.pushInstant();
     }
 
     if(nWrongPass)
       nWrongPass--;
 
     event.heartbeat();
+
     if(doorOpenTimer)
     {
       if(--doorOpenTimer == 0)
@@ -569,7 +569,7 @@ void loop()
     digitalWrite(ESP_LED, HIGH);
   }
 
-  DrawScreen(ptm);
+  DrawScreen();
 
   vals[tog][ind[tog]] = analogRead(A0); // read current IR sensor value into current circle buf
   if(++ind[tog] >= ANA_AVG) ind[tog] = 0;
@@ -586,7 +586,7 @@ void loop()
   }
 }
 
-void DrawScreen(tm *ptm)
+void DrawScreen()
 {
   static int16_t ind;
   // draw the screen here
@@ -599,11 +599,11 @@ void DrawScreen(tm *ptm)
   {
     String s = timeFmt(true, true);
     s += "  ";
-    s += days[ptm->tm_wday];
+    s += days[weekday()-1];
     s += " ";
-    s += String(ptm->tm_mday);
+    s += String(day());
     s += " ";
-    s += months[ptm->tm_mon];
+    s += months[month()-1];
     s += "  ";
     int len = s.length();
     s = s + s;
@@ -672,57 +672,109 @@ uint16_t Fletcher16( uint8_t* data, int count)
    return (sum2 << 8) | sum1;
 }
 
-// Setup a php script on my server to send traffic here from /iot/waterbed.php, plus sync time
-// PHP script: https://github.com/CuriousTech/ESP07_Multi/blob/master/fwdip.php
-bool ctSetIp()
+
+void getUdpTime()
 {
-  WiFiClient client;
-  if (!client.connect(myHost, httpPort))
-  {
-    Serial.println("Host ip connection failed");
-    delay(100);
-    return false;
-  }
-
-  String url = "/fwdip.php?name=";
-  url += serverFile;
-  url += "&port=";
-  url += serverPort;
-
-  client.print(String("GET ") + url + " HTTP/1.1\r\n" +
-               "Host: " + myHost + "\r\n" + 
-               "Connection: close\r\n\r\n");
-
-  delay(10);
-  String line = client.readStringUntil('\n');
-  // Read all the lines of the reply from server
-  while(client.available())
-  {
-    line = client.readStringUntil('\n');
-    line.trim();
-    if(line.startsWith("IP:")) // I don't need my global IP
-    {
-    }
-  }
- 
-  client.stop();
-  return true;
+  if(bNeedUpdate) return;
+//  Serial.println("getUdpTime");
+  Udp.begin(2390);
+  // set all bytes in the buffer to 0
+  memset(packetBuffer, 0, NTP_PACKET_SIZE);
+  // Initialize values needed to form NTP request
+  // (see URL above for details on the packets)
+  packetBuffer[0] = 0b11100011;   // LI, Version, Mode
+  packetBuffer[1] = 0;     // Stratum, or type of clock
+  packetBuffer[2] = 6;     // Polling Interval
+  packetBuffer[3] = 0xEC;  // Peer Clock Precision
+  // 8 bytes of zero for Root Delay & Root Dispersion
+  packetBuffer[12]  = 49;
+  packetBuffer[13]  = 0x4E;
+  packetBuffer[14]  = 49;
+  packetBuffer[15]  = 52;
+  
+  // all NTP fields have been given values, now
+  // you can send a packet requesting a timestamp:
+  // time.nist.gov
+  Udp.beginPacket("0.us.pool.ntp.org", 123); //NTP requests are to port 123
+  Udp.write(packetBuffer, NTP_PACKET_SIZE);
+  Udp.endPacket();
+  bNeedUpdate = true;
 }
 
 void DST() // 2016 starts 2AM Mar 13, ends Nov 6
 {
-  time_t t = time(nullptr);
-  tm *ptm = localtime(&t);
+  tmElements_t tm;
+  breakTime(now(), tm);
+  // save current time
+  uint8_t m = tm.Month;
+  int8_t d = tm.Day;
+  int8_t dow = tm.Wday;
 
-  uint8_t m = ptm->tm_mon; // 0-11
-  int8_t d = ptm->tm_mday; // 1-30
-  int8_t dow = ptm->tm_wday; // 0-6
+  tm.Month = 3; // set month = Mar
+  tm.Day = 14; // day of month = 14
+  breakTime(makeTime(tm), tm); // convert to get weekday
 
-  if ((m  >  2 && m < 10 ) || 
-      (m ==  2 && d >= 8 && dow == 0 && ptm->tm_hour >= 2) ||  // DST starts 2nd Sunday of March;  2am
-      (m == 10 && d <  8 && dow >  0) ||
-      (m == 10 && d <  8 && dow == 0 && ptm->tm_hour < 2))   // DST ends 1st Sunday of November; 2am
-   ee.dst = 1;
+  uint8_t day_of_mar = (7 - tm.Wday) + 8; // DST = 2nd Sunday
+
+  tm.Month = 11; // set month = Nov (0-11)
+  tm.Day = 7; // day of month = 7 (1-30)
+  breakTime(makeTime(tm), tm); // convert to get weekday
+
+  uint8_t day_of_nov = (7 - tm.Wday) + 1;
+
+  if ((m  >  3 && m < 11 ) ||
+      (m ==  3 && d > day_of_mar) ||
+      (m ==  3 && d == day_of_mar && hour() >= 2) ||  // DST starts 2nd Sunday of March;  2am
+      (m == 11 && d <  day_of_nov) ||
+      (m == 11 && d == day_of_nov && hour() < 2))   // DST ends 1st Sunday of November; 2am
+   dst = 1;
  else
-   ee.dst = 0;
+   dst = 0;
+}
+
+bool checkUdpTime()
+{
+  static int retry = 0;
+
+  if(!Udp.parsePacket())
+  {
+    if(++retry > 500)
+     {
+        getUdpTime();
+        retry = 0;
+     }
+    return false;
+  }
+//  Serial.println("checkUdpTime good");
+
+  // We've received a packet, read the data from it
+  Udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
+
+  Udp.stop();
+  // the timestamp starts at byte 40 of the received packet and is four bytes,
+  // or two words, long. First, extract the two words:
+
+  unsigned long highWord = word(packetBuffer[40], packetBuffer[41]);
+  unsigned long lowWord = word(packetBuffer[42], packetBuffer[43]);
+  unsigned long secsSince1900 = highWord << 16 | lowWord;
+  // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
+  const unsigned long seventyYears = 2208988800UL;
+  long timeZoneOffset = 3600 * (ee.tz + dst);
+  unsigned long epoch = secsSince1900 - seventyYears + timeZoneOffset + 1; // bump 1 second
+
+  // Grab the fraction
+  highWord = word(packetBuffer[44], packetBuffer[45]);
+  lowWord = word(packetBuffer[46], packetBuffer[47]);
+  unsigned long d = (highWord << 16 | lowWord) / 4295000; // convert to ms
+  delay(d); // delay to next second (meh)
+  setTime(epoch);
+  DST(); // check the DST and reset clock
+  timeZoneOffset = 3600 * (ee.tz + dst);
+  epoch = secsSince1900 - seventyYears + timeZoneOffset + 1; // bump 1 second
+  setTime(epoch);
+
+//  Serial.print("Time ");
+//  Serial.println(timeFmt(true, true));
+  bNeedUpdate = false;
+  return true;
 }
