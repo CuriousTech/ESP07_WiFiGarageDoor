@@ -12,7 +12,7 @@
 #include "WiFiManager.h"
 #include "ssd1306_i2c.h"
 #include "icons.h"
-#include "time.h"
+#include <TimeLib.h>
 
 extern SSD1306 display;
 extern int httpPort;
@@ -172,26 +172,21 @@ void WiFiManager::startWebConfig(String ssid) {
     display.print("Server started");
     DEBUG_PRINT("Server started");
 
-    time_t t = time(nullptr);
-    tm *ptm = localtime(&t);
-
     uint8_t s;
-    uint8_t m = ptm->tm_min;
-
+    uint8_t m = minute();
+ 
     _timeout = true;
     while(serverLoop() == WM_WAIT) {      //looping
-      t = time(nullptr);
-      ptm = localtime(&t);
-      if(s != ptm->tm_sec) // pulse LED
+      if(s != second()) // pulse LED
       {
-        s = ptm->tm_sec;
+        s = second();
         digitalWrite(2, !digitalRead(2)); // Toggle blue LED
       }
       if(_timeout)
       {
-        if(m != ptm->tm_min )
+        if(m != minute() )
         {
-          m = ptm->tm_min;
+          m = minute();
           int n = WiFi.scanNetworks();
           if(n){
             for (int i = 0; i < n; ++i)
