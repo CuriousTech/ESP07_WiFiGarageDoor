@@ -26,18 +26,17 @@ SOFTWARE.
 #include <Wire.h>
 #include "ssd1306_i2c.h"
 #include "icons.h"
-#include <dht.h>
-#include <TimeLib.h>
+#include <dht.h> // http://www.github.com/markruys/arduino-DHT
+#include <TimeLib.h> // http://www.pjrc.com/teensy/td_libs_Time.html
 
 #include <WiFiClient.h>
 #include <EEPROM.h>
 #include <ESP8266mDNS.h>
 #include "WiFiManager.h"
 #include <ESP8266WebServer.h>
-#include "event.h"
+#include <Event.h>  // https://github.com/CuriousTech/ESP8266-HVAC/tree/master/Libraries/Event
  
 const char *controlPassword = "password"; // device password for modifying any settings
-const char *serverFile = "GarageDoor";    // Creates /iot/GarageDoor.php
 int serverPort = 84;                    // port fwd for fwdip.php
 
 #define ESP_LED    2  // low turns on ESP blue LED
@@ -427,22 +426,12 @@ void handleNotFound() {
   server.send ( 404, "text/plain", message );
 }
 
-volatile unsigned long range = 1;
-
-void echoISR()
-{
-  static unsigned long start;
-
-  if(digitalRead(ECHO) == HIGH) // count from rising edge to falling edge
-    start = micros();
-  else
-    range = (micros() - start) >> 2; // don't need any specific value
-}
 
 void setup()
 {
   pinMode(ESP_LED, OUTPUT);
   pinMode(TRIG, OUTPUT);      // HC-SR04 trigger
+  pinMode(ECHO, INPUT);
   pinMode(REMOTE, OUTPUT);
   digitalWrite(REMOTE, LOW);
 
@@ -482,7 +471,6 @@ void setup()
   server.begin();
 
   dht.setup(DHT_22, DHT::DHT22);
-  attachInterrupt(ECHO, echoISR, CHANGE);
   getUdpTime();
 }
 
@@ -564,8 +552,19 @@ void loop()
         event.alert("Door not closed");
       }
     }
+
+    unsigned long range;
+
+    digitalWrite(TRIG, HIGH); // pulse the rangefinder
+    delayMicroseconds(10);
+    digitalWrite(TRIG, LOW);
+    range = ( (pulseIn(ECHO, HIGH) / 2) / 29.1 );
+    Serial.println(range);
+    vals[1][ind[1]] = range; // read current IR sensor value into current circle buf
+    if(++ind[1] >= ANA_AVG) ind[1] = 0;
+    
     digitalWrite(ESP_LED, LOW);
-    delay(50);
+    delay(20);
     digitalWrite(ESP_LED, HIGH);
   }
 
@@ -573,17 +572,6 @@ void loop()
 
   vals[tog][ind[tog]] = analogRead(A0); // read current IR sensor value into current circle buf
   if(++ind[tog] >= ANA_AVG) ind[tog] = 0;
-
-  if(range)
-  {
-      vals[1][ind[1]] = range; // read current IR sensor value into current circle buf
-      if(++ind[1] >= ANA_AVG) ind[1] = 0;
-      range = 0;
-      delay(20);
-      digitalWrite(TRIG, HIGH); // pulse the rangefinder
-      delayMicroseconds(10);
-      digitalWrite(TRIG, LOW);
-  }
 }
 
 void DrawScreen()
