@@ -24,12 +24,13 @@ SOFTWARE.
 // Build with Arduino IDE 1.6.8, esp8266 SDK 2.2.0
 
 #include <Wire.h>
+#include <DHT.h> // http://www.github.com/markruys/arduino-DHT
+#include <TimeLib.h> // http://www.pjrc.com/teensy/td_libs_Time.html
 #include "ssd1306_i2c.h"
 #include "icons.h"
-#include <dht.h> // http://www.github.com/markruys/arduino-DHT
-#include <TimeLib.h> // http://www.pjrc.com/teensy/td_libs_Time.html
 
 #include <WiFiClient.h>
+#include <WiFiClientSecure.h>
 #include <EEPROM.h>
 #include <ESP8266mDNS.h>
 #include "WiFiManager.h"
@@ -52,7 +53,6 @@ SSD1306 display(0x3c, 5, 4); // Initialize the oled display for address 0x3c, sd
 bool bDisplay_on = true;
 
 WiFiManager wifi(0);  // AP page:  192.168.4.1
-extern MDNSResponder mdns;
 ESP8266WebServer server( serverPort );
 const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
 byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
@@ -61,7 +61,8 @@ bool bNeedUpdate;
 uint8_t  dst;           // current dst
 
 DHT dht;
-
+float temp;
+float rh;
 int httpPort = 80; // may be modified by open AP scan
 
 struct eeSet // EEPROM backed data
@@ -100,7 +101,7 @@ String dataJson()
     s += ",\"temp\": \"";
     s += String(adjTemp(), 1);
     s += "\",\"rh\": \"";
-    s += String(dht.getHumidity(), 1);
+    s += String(adjRh(), 1);
     s += "\"}";
     return s;
 }
@@ -261,7 +262,7 @@ void handleRoot() // Main webpage interface
             "<div id=\"temp\">";
     page +=  String(adjTemp(), 1);
     page += "&degF</div></td><td><div id=\"rh\">";
-    page += String(dht.getHumidity(), 1);
+    page += String(rh, 1);
     page += "%</div></td></tr><tr><td align=\"center\">Timeout</td><td align=\"center\">Timezone</td></tr>"
             "<tr><td>";
     page += valButton("C", String(ee.closeTimeout) );
@@ -279,7 +280,13 @@ void handleRoot() // Main webpage interface
 
 float adjTemp()
 {
-  int t = (dht.toFahrenheit( dht.getTemperature() ) * 10) + ee.tempOffset;
+  int t = (temp * 10) + ee.tempOffset;
+  return ((float)t / 10);
+}
+
+float adjRh()
+{
+  int t = (rh * 10);
   return ((float)t / 10);
 }
 
@@ -367,7 +374,7 @@ void handleJson()
   page += ",\"temp\": \"";
   page += String(adjTemp(), 1);
   page += "\",\"rh\": \"";
-  page += String(dht.getHumidity(), 1);
+  page += String(adjRh(), 1);
   page += "\"}";
 
   server.send( 200, "text/json", page );
@@ -448,6 +455,7 @@ void setup()
   Serial.println();
   Serial.println();
 
+  WiFi.hostname("gdo");
   wifi.autoConnect("GDO");
   eeRead(); // don't access EE before WiFi init
 
@@ -456,7 +464,7 @@ void setup()
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
 
-  if ( mdns.begin ( "esp8266", WiFi.localIP() ) ) {
+  if ( MDNS.begin ( "gdo", WiFi.localIP() ) ) {
     Serial.println ( "MDNS responder started" );
   }
 
@@ -469,6 +477,7 @@ void setup()
 //  } );
   server.onNotFound ( handleNotFound );
   server.begin();
+  MDNS.addService("http", "tcp", serverPort);
 
   dht.setup(DHT_22, DHT::DHT22);
   getUdpTime();
@@ -482,11 +491,9 @@ void loop()
 #define ANA_AVG 24
   static uint16_t vals[2][ANA_AVG];
   static uint8_t ind[2];
-  static float lastTemp;
-  static float lastRh;
   bool bNew;
 
-  mdns.update();
+  MDNS.update();
   server.handleClient();
 
   if(bNeedUpdate)
@@ -531,15 +538,19 @@ void loop()
       eeWrite(); // update EEPROM if needed while we're at it (give user time to make many adjustments)
     }
 
-    dht.read();
-
-    if(adjTemp() != lastTemp || dht.getHumidity() != lastRh)
+    static uint8_t dht_cnt = 5;
+    if(--dht_cnt == 0)
     {
-      lastTemp = adjTemp();
-      lastRh = dht.getHumidity();
-      event.pushInstant();
+      dht_cnt = 5;
+      float newtemp = dht.toFahrenheit(dht.getTemperature());
+      float newrh = dht.getHumidity();
+      if(dht.getStatus() == DHT::ERROR_NONE && (temp != newtemp || rh != newrh))
+      {
+        temp = newtemp;
+        rh = newrh;
+        event.pushInstant();
+      }
     }
-
     if(nWrongPass)
       nWrongPass--;
 
@@ -550,6 +561,7 @@ void loop()
       if(--doorOpenTimer == 0)
       {
         event.alert("Door not closed");
+        pushBullet("GDO", "Door not closed");
       }
     }
 
@@ -559,7 +571,6 @@ void loop()
     delayMicroseconds(10);
     digitalWrite(TRIG, LOW);
     range = ( (pulseIn(ECHO, HIGH) / 2) / 29.1 );
-    Serial.println(range);
     vals[1][ind[1]] = range; // read current IR sensor value into current circle buf
     if(++ind[1] >= ANA_AVG) ind[1] = 0;
     
@@ -603,7 +614,7 @@ void DrawScreen()
     display.drawPropString(80, 23, bCarIn ? "In":"Out" );
 
     display.drawPropString(2, 47, String(adjTemp(), 1) + "]");
-    display.drawPropString(64, 47, String(dht.getHumidity(), 1) + "%");
+    display.drawPropString(64, 47, String(adjRh(), 1) + "%");
 
   }
   display.display();
@@ -659,7 +670,6 @@ uint16_t Fletcher16( uint8_t* data, int count)
 
    return (sum2 << 8) | sum1;
 }
-
 
 void getUdpTime()
 {
@@ -765,4 +775,39 @@ bool checkUdpTime()
 //  Serial.println(timeFmt(true, true));
   bNeedUpdate = false;
   return true;
+}
+
+void pushBullet(const char *pTitle, const char *pBody)
+{
+  WiFiClientSecure client;
+  const char host[] = "api.pushbullet.com";
+  const char url[] = "/v2/pushes";
+
+  if (!client.connect(host, 443))
+  {
+    event.print("PushBullet connection failed");
+    return;
+  }
+
+  String data = "{\"type\": \"note\", \"title\": \"";
+  data += pTitle;
+  data += "\", \"body\": \"";
+  data += pBody;
+  data += "\"}";
+
+  client.print(String("POST ") + url + " HTTP/1.1\r\n" +
+              "Host: " + host + "\r\n" +
+              "Content-Type: application/json\r\n" +
+              "Access-Token: blahblahYOURTOKENblahblah\r\n" +
+              "User-Agent: Arduino\r\n" +
+              "Content-Length: " + data.length() + "\r\n" + 
+              "Connection: close\r\n\r\n" +
+              data + "\r\n\r\n");
+ 
+  int i = 0;
+  while (client.connected() && ++i < 10)
+  {
+    String line = client.readStringUntil('\n');
+    Serial.println(line);
+  }
 }
