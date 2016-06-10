@@ -26,8 +26,7 @@ SOFTWARE.
 #include <Wire.h>
 #include <DHT.h> // http://www.github.com/markruys/arduino-DHT
 #include <TimeLib.h> // http://www.pjrc.com/teensy/td_libs_Time.html
-#include "ssd1306_i2c.h"
-#include "icons.h"
+#include <ssd1306_i2c.h> // https://github.com/CuriousTech/WiFi_Doorbell/tree/master/Libraries/ssd1306_i2c
 
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
@@ -39,6 +38,8 @@ SOFTWARE.
  
 const char *controlPassword = "password"; // device password for modifying any settings
 int serverPort = 84;                    // port fwd for fwdip.php
+
+const char *pbToken = "your pushbullet token";
 
 #define ESP_LED    2  // low turns on ESP blue LED
 #define ECHO      12  // the voltage divider to the bottom corner pin (short R7, don't use R8)
@@ -186,7 +187,12 @@ bool parseArgs()
       nWrongPass <<= 1;
     if(ip != lastIP)  // if different IP drop it down
        nWrongPass = 10;
-    event.print("HackIP=" + ipString(ip) ); // log attempts
+    String data = "{ip:\"";
+    data += ipString(ip);
+    data += "\",pass:\"";
+    data += password;
+    data += "\"}";
+    event.push("hack", data); // log attempts
     bRemote = false;
   }
 
@@ -798,7 +804,7 @@ void pushBullet(const char *pTitle, const char *pBody)
   client.print(String("POST ") + url + " HTTP/1.1\r\n" +
               "Host: " + host + "\r\n" +
               "Content-Type: application/json\r\n" +
-              "Access-Token: blahblahYOURTOKENblahblah\r\n" +
+              "Access-Token: " + pbToken + "\r\n" +
               "User-Agent: Arduino\r\n" +
               "Content-Length: " + data.length() + "\r\n" + 
               "Connection: close\r\n\r\n" +
