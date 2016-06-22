@@ -36,10 +36,8 @@ SOFTWARE.
 #include <ESP8266WebServer.h>
 #include <Event.h>  // https://github.com/CuriousTech/ESP8266-HVAC/tree/master/Libraries/Event
  
-const char *controlPassword = "password"; // device password for modifying any settings
+const char controlPassword[] = "password"; // device password for modifying any settings
 int serverPort = 84;                    // port fwd for fwdip.php
-
-const char *pbToken = "your pushbullet token";
 
 #define ESP_LED    2  // low turns on ESP blue LED
 #define ECHO      12  // the voltage divider to the bottom corner pin (short R7, don't use R8)
@@ -51,7 +49,6 @@ uint32_t lastIP;
 int nWrongPass;
 
 SSD1306 display(0x3c, 5, 4); // Initialize the oled display for address 0x3c, sda=5, sdc=4
-bool bDisplay_on = true;
 
 WiFiManager wifi(0);  // AP page:  192.168.4.1
 ESP8266WebServer server( serverPort );
@@ -70,20 +67,24 @@ struct eeSet // EEPROM backed data
 {
   uint16_t size;          // if size changes, use defauls
   uint16_t sum;           // if sum is diiferent from memory struct, write
-  int8_t   tz;            // Timezone offset from your server
+  int8_t   tz;            // Timezone offset
   uint8_t  dst;
   uint16_t nCarThresh;
   uint16_t nDoorThresh;
   uint16_t alarmTimeout;
   uint16_t closeTimeout;
-  int8_t   tempOffset;
+  int8_t   tempCal;
+  bool     bEnableOLED;
+  char     pbToken[40];
 };
 eeSet ee = { sizeof(eeSet), 0xAAAA,
-  -5, 0, // TZ, dst
-  500, 900,       // thresholds
-  5*60,          // alarmTimeout
-  30,            // closeTimeout
-  0       // adjust for error
+  -5, 0,     // TZ, dst
+  500, 900,  // thresholds
+  5*60,      // alarmTimeout
+  60,        // closeTimeout (seconds)
+  0,         // adjust for error
+  true,    // OLED
+  "pushbullet token" // pushbullet token
 };
 
 int ee_sum; // sum for checking if any setting has changed
@@ -125,26 +126,33 @@ bool parseArgs()
 {
   char temp[100];
   String password;
-  int val;
   bool bRemote = false;
   bool ipSet = false;
-  eeSet save;
-  memcpy(&save, &ee, sizeof(ee));
 
   Serial.println("parseArgs");
 
+  // get password first
   for ( uint8_t i = 0; i < server.args(); i++ ) {
     server.arg(i).toCharArray(temp, 100);
     String s = wifi.urldecode(temp);
-    Serial.println( i + " " + server.argName ( i ) + ": " + s);
-    bool which = (tolower(server.argName(i).charAt(1) ) == 'n') ? 1:0;
-    int val = s.toInt();
- 
     switch( server.argName(i).charAt(0)  )
     {
       case 'k': // key
           password = s;
           break;
+    }
+  }
+
+  if(password == controlPassword)
+  for ( uint8_t i = 0; i < server.args(); i++ ) {
+    server.arg(i).toCharArray(temp, 100);
+    String s = wifi.urldecode(temp);
+//    Serial.println( i + " " + server.argName ( i ) + ": " + s);
+    bool which = (tolower(server.argName(i).charAt(1) ) == 'D') ? 1:0;
+    int val = s.toInt();
+ 
+    switch( server.argName(i).charAt(0)  )
+    {
       case 'Z': // TZ
           ee.tz = val;
           getUdpTime();
@@ -155,24 +163,27 @@ bool parseArgs()
       case 'T': // alarm timeout
           ee.alarmTimeout = val;
           break;
-      case 'L':           // Ex set car=290, door=500 : hTtp://192.168.0.190:84?Ln=500&Ld=290&key=password
-           if(which) // Ln
+      case 'L':  // Thresholds, Ex set car=290, door=500 : hTtp://192.168.0.190:84?LC=290&LD=500&key=password
+           if(which) // LD
            {
              ee.nDoorThresh = val;
            }
-           else // Ld
+           else // LC
            {
              ee.nCarThresh = val;
            }
            break;
       case 'F': // temp offset
-          ee.tempOffset = val;
+          ee.tempCal = val;
           break;
       case 'D': // Door (pulse the output)
           bRemote = true;
           break;
       case 'O': // OLED
-          bDisplay_on = val ? true:false;
+          ee.bEnableOLED = (s == "true") ? true:false;
+          break;
+      case 'p': // pushbullet
+          s.toCharArray( ee.pbToken, sizeof(ee.pbToken) );
           break;
     }
   }
@@ -187,16 +198,14 @@ bool parseArgs()
       nWrongPass <<= 1;
     if(ip != lastIP)  // if different IP drop it down
        nWrongPass = 10;
-    String data = "{ip:\"";
+    String data = "{\"ip\":\"";
     data += ipString(ip);
-    data += "\",pass:\"";
+    data += "\",\"pass\":\"";
     data += password;
     data += "\"}";
     event.push("hack", data); // log attempts
     bRemote = false;
   }
-
-  if(nWrongPass) memcpy(&ee, &save, sizeof(ee)); // undo any changes
 
   lastIP = ip;
   if(bRemote)
@@ -211,10 +220,36 @@ void handleRoot() // Main webpage interface
 
     String page = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>"
       "<title>WiFi Garage Door Opener</title>"
-      "<style>div,input {margin-bottom: 5px;}body{width:260px;display:block;margin-left:auto;margin-right:auto;text-align:right;font-family: Arial, Helvetica, sans-serif;}}</style>"
+      "<style type=\"text/css\">\n"
+      "div,table,input{\n"
+      "border-radius: 5px;\n"
+      "margin-bottom: 5px;\n"
+      "box-shadow: 2px 2px 12px #000000;\n"
+      "background-image: -moz-linear-gradient(top, #ffffff, #50a0ff);\n"
+      "background-image: -ms-linear-gradient(top, #ffffff, #50a0ff);\n"
+      "background-image: -o-linear-gradient(top, #ffffff, #50a0ff);\n"
+      "background-image: -webkit-linear-gradient(top, #efffff, #50a0ff);\n"
+      "background-image: linear-gradient(top, #ffffff, #50a0ff);\n"
+      "background-clip: padding-box;\n"
+      "}\n"
+      "body{width:240px;font-family: Arial, Helvetica, sans-serif;}\n"
+      ".style5 {\n"
+      "border-radius: 5px;\n"
+      "box-shadow: 0px 0px 15px #000000;\n"
+      "background-image: -moz-linear-gradient(top, #ff00ff, #ffa0ff);\n"
+      "background-image: -ms-linear-gradient(top, #ff00ff, #ffa0ff);\n"
+      "background-image: -o-linear-gradient(top, #ff00ff, #ffa0ff);\n"
+      "background-image: -webkit-linear-gradient(top, #ff0000, #ffa0a0);\n"
+      "background-image: linear-gradient(top, #ff00ff, #ffa0ff);\n"
+      "}\n"
+      "</style>"
 
-    "<script src=\"http://ajax.googleapis.com/ajax/libs/jquery/1.3.2/jquery.min.js\" type=\"text/javascript\" charset=\"utf-8\"></script>"
-    "<script type=\"text/javascript\">"
+    "<script src=\"http://ajax.googleapis.com/ajax/libs/jquery/1.3.2/jquery.min.js\" type=\"text/javascript\" charset=\"utf-8\"></script>\n"
+    "<script type=\"text/javascript\">\n"
+    "a=document.all;"
+    "oledon=";
+  page += ee.bEnableOLED;
+  page += ";"
     "function startEvents()"
     "{"
       "eventSource = new EventSource(\"events?i=60&p=1\");"
@@ -223,15 +258,22 @@ void handleRoot() // Main webpage interface
       "eventSource.addEventListener('alert', function(e){alert(e.data)},false);"
       "eventSource.addEventListener('state',function(e){"
         "d = JSON.parse(e.data);"
-        "document.all.car.innerHTML = d.car?\"IN\":\"OUT\";"
-        "document.all.door.innerHTML = d.door?\"OPEN\":\"CLOSED\";"
-        "document.all.doorBtn.value = d.door?\"Close\":\"Open\";"
-        "document.all.temp.innerHTML = d.temp+\"&degF\";"
-        "document.all.rh.innerHTML = d.rh+'%';"
+        "a.car.innerHTML = d.car?\"IN\":\"OUT\";"
+        "a.car.setAttribute('class',d.car?'':'style5');"
+        "a.door.innerHTML = d.door?\"OPEN\":\"CLOSED\";"
+        "a.door.setAttribute('class',d.door?'style5':'');"
+        "a.doorBtn.value = d.door?\"Close\":\"Open\";"
+        "a.temp.innerHTML = d.temp+\"&degF\";"
+        "a.rh.innerHTML = d.rh+'%';"
       "},false)"
     "}"
     "function setDoor(){"
     "$.post(\"s\", { D: 0, key: document.all.myKey.value })"
+    "}"
+    "function oled(){"
+      "oledon=!oledon;"
+      "$.post(\"s\", { O: oledon, key: document.all.myKey.value });"
+      "document.all.OLED.value=oledon?'OFF':'ON'"
     "}"
     "setInterval(timer,1000);"
     "t=";
@@ -246,47 +288,59 @@ void handleRoot() // Main webpage interface
       "for(i=0;i<document.forms.length;i++) document.forms[i].elements['key'].value = key;"
       "startEvents();}\">";
 
-    page += "<h3>WiFi Garage Door Opener </h3>"
-            "<table align=\"right\">"
-            "<tr><td><p id=\"time\">";
+    page += "<div><h3>WiFi Garage Door Opener </h3>"
+            "<table align=\"center\">"
+            "<tr align=\"center\"><td><p id=\"time\">";
     page += timeFmt(true, true);
     page += "</p></td><td>";
     page += "<input type=\"button\" value=\"Open\" id=\"doorBtn\" onClick=\"{setDoor()}\">";
     page += "</td></tr>"
-          "<tr><td align=\"center\">Garage</td>"
-          "<td align=\"center\">Car</td>"
-          "</tr><tr>"
-          "<td align=\"center\">"
-          "<div id=\"door\">";
+          "<tr align=\"center\"><td>Garage</td>"
+          "<td>Car</td>"
+          "</tr><tr align=\"center\">"
+          "<td>"
+          "<div id=\"door\"";
+    if(bDoorOpen)
+      page += " class='style5'";
+    page += ">";
     page += bDoorOpen ? "OPEN" : "CLOSED";
     page += "</div></td>"
-            "<td align=\"center\">"
-            "<div id=\"car\">";
+            "<td>"
+            "<div id=\"car\"";
+    if(bCarIn == false)
+      page += " class='style5'";
+    page += ">";
     page += bCarIn ? "IN" : "OUT";
     page += "</div></td></tr>"
-            "<tr><td>" // unused row
+            "<tr align=\"center\"><td>" // temp/rh row
             "<div id=\"temp\">";
     page +=  String(adjTemp(), 1);
     page += "&degF</div></td><td><div id=\"rh\">";
     page += String(rh, 1);
-    page += "%</div></td></tr><tr><td align=\"center\">Timeout</td><td align=\"center\">Timezone</td></tr>"
+    page += "%</div></td></tr><tr align=\"center\"><td>Timeout</td><td>Timezone</td></tr>"
             "<tr><td>";
     page += valButton("C", String(ee.closeTimeout) );
     page += "</td><td>";  page += valButton("Z", String(ee.tz) );
-    page += "</td></tr></table>"
+    page += "</td></tr>"
+            "<tr><td>Display:</td><td>"
+            "<input type=\"button\" value=\"";
+    page += ee.bEnableOLED ? "OFF":"ON";
+    page += "\" id=\"OLED\" onClick=\"{oled()}\">"
+            "</td></tr>"
 
+            "</table>"
             "<input id=\"myKey\" name=\"key\" type=text size=50 placeholder=\"password\" style=\"width: 150px\">"
             "<input type=\"button\" value=\"Save\" onClick=\"{localStorage.setItem('key', key = document.all.myKey.value)}\">"
             "<br><small>Logged IP: ";
     page += ipString(server.client().remoteIP());
-    page += "</small><br></body></html>";
+    page += "</small></div></body></html>";
 
     server.send ( 200, "text/html", page );
 }
 
 float adjTemp()
 {
-  int t = (temp * 10) + ee.tempOffset;
+  int t = (temp * 10) + ee.tempCal;
   return ((float)t / 10);
 }
 
@@ -414,12 +468,12 @@ void handleEvents()
     }
   }
 
-  event.set(server.client(), interval, nType); // copying the client before the send makes it work with SDK 2.2.0
   String content = "HTTP/1.1 200 OK\r\n"
       "Connection: keep-alive\r\n"
       "Access-Control-Allow-Origin: *\r\n"
       "Content-Type: text/event-stream\r\n\r\n";
   server.sendContent(content);
+  event.set(server.client(), interval, nType); // copying the client before the send makes it work with SDK 2.2.0
 }
 
 void handleNotFound() {
@@ -600,7 +654,7 @@ void DrawScreen()
   const char days[7][4] = {"Sun","Mon","Tue","Wed","Thr","Fri","Sat"};
   const char months[12][4] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
 
-  if(bDisplay_on)
+  if(ee.bEnableOLED)
   {
     String s = timeFmt(true, true);
     s += "  ";
@@ -804,7 +858,7 @@ void pushBullet(const char *pTitle, const char *pBody)
   client.print(String("POST ") + url + " HTTP/1.1\r\n" +
               "Host: " + host + "\r\n" +
               "Content-Type: application/json\r\n" +
-              "Access-Token: " + pbToken + "\r\n" +
+              "Access-Token: " + ee.pbToken + "\r\n" +
               "User-Agent: Arduino\r\n" +
               "Content-Length: " + data.length() + "\r\n" + 
               "Connection: close\r\n\r\n" +
