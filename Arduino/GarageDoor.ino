@@ -110,26 +110,15 @@ String dataJson()
 
 eventHandler event(dataJson);
 
-String ipString(IPAddress ip) // Convert IP to string
-{
-  String sip = String(ip[0]);
-  sip += ".";
-  sip += ip[1];
-  sip += ".";
-  sip += ip[2];
-  sip += ".";
-  sip += ip[3];
-  return sip;
-}
-
-bool parseArgs()
+void parseParams()
 {
   char temp[100];
-  String password;
-  bool bRemote = false;
-  bool ipSet = false;
+  char password[64];
+ 
+  Serial.println("parseParams");
 
-  Serial.println("parseArgs");
+  if(server.args() == 0)
+    return;
 
   // get password first
   for ( uint8_t i = 0; i < server.args(); i++ ) {
@@ -138,17 +127,41 @@ bool parseArgs()
     switch( server.argName(i).charAt(0)  )
     {
       case 'k': // key
-          password = s;
-          break;
+        s.toCharArray(password, sizeof(password));
+        break;
     }
   }
 
-  if(password == controlPassword)
+  uint32_t ip = server.client().remoteIP();
+
+  if(server.args() == 0)
+    return;
+
+  if(strcmp(password, controlPassword))
+  {
+    if(nWrongPass == 0) // it takes at least 10 seconds to recognize a wrong password
+      nWrongPass = 10;
+    else if((nWrongPass & 0xFFFFF000) == 0 ) // time doubles for every high speed wrong password attempt.  Max 1 hour
+      nWrongPass <<= 1;
+    if(ip != lastIP)  // if different IP drop it down
+       nWrongPass = 10;
+    String data = "{\"ip\":\"";
+    data += server.client().remoteIP().toString();
+    data += "\",\"pass\":\"";
+    data += password;
+    data += "\"}";
+    event.push("hack", data); // log attempts
+    lastIP = ip;
+    return;
+  }
+
+  lastIP = ip;
+
   for ( uint8_t i = 0; i < server.args(); i++ ) {
     server.arg(i).toCharArray(temp, 100);
     String s = wifi.urldecode(temp);
 //    Serial.println( i + " " + server.argName ( i ) + ": " + s);
-    bool which = (tolower(server.argName(i).charAt(1) ) == 'D') ? 1:0;
+    bool which = (tolower(server.argName(i).charAt(1) ) == 'd') ? 1:0;
     int val = s.toInt();
  
     switch( server.argName(i).charAt(0)  )
@@ -177,7 +190,7 @@ bool parseArgs()
           ee.tempCal = val;
           break;
       case 'D': // Door (pulse the output)
-          bRemote = true;
+          pulseRemote();
           break;
       case 'O': // OLED
           ee.bEnableOLED = (s == "true") ? true:false;
@@ -187,36 +200,13 @@ bool parseArgs()
           break;
     }
   }
-
-  uint32_t ip = server.client().remoteIP();
-
-  if(server.args() && (password != controlPassword) )
-  {
-    if(nWrongPass == 0) // it takes at least 10 seconds to recognize a wrong password
-      nWrongPass = 10;
-    else if((nWrongPass & 0xFFFFF000) == 0 ) // time doubles for every high speed wrong password attempt.  Max 1 hour
-      nWrongPass <<= 1;
-    if(ip != lastIP)  // if different IP drop it down
-       nWrongPass = 10;
-    String data = "{\"ip\":\"";
-    data += ipString(ip);
-    data += "\",\"pass\":\"";
-    data += password;
-    data += "\"}";
-    event.push("hack", data); // log attempts
-    bRemote = false;
-  }
-
-  lastIP = ip;
-  if(bRemote)
-     pulseRemote();
 }
 
 void handleRoot() // Main webpage interface
 {
   Serial.println("handleRoot");
 
-  parseArgs();
+  parseParams();
 
     String page = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>"
       "<title>WiFi Garage Door Opener</title>"
@@ -232,7 +222,7 @@ void handleRoot() // Main webpage interface
       "background-image: linear-gradient(top, #ffffff, #50a0ff);\n"
       "background-clip: padding-box;\n"
       "}\n"
-      "body{width:240px;font-family: Arial, Helvetica, sans-serif;}\n"
+      "body{width:230px;font-family: Arial, Helvetica, sans-serif;}\n"
       ".style5 {\n"
       "border-radius: 5px;\n"
       "box-shadow: 0px 0px 15px #000000;\n"
@@ -332,7 +322,7 @@ void handleRoot() // Main webpage interface
             "<input id=\"myKey\" name=\"key\" type=text size=50 placeholder=\"password\" style=\"width: 150px\">"
             "<input type=\"button\" value=\"Save\" onClick=\"{localStorage.setItem('key', key = document.all.myKey.value)}\">"
             "<br><small>Logged IP: ";
-    page += ipString(server.client().remoteIP());
+    page += server.client().remoteIP().toString();
     page += "</small></div></body></html>";
 
     server.send ( 200, "text/html", page );
@@ -402,10 +392,10 @@ String timeFmt(bool do_sec, bool do_M)
 
 void handleS()
 {
-    parseArgs();
+    parseParams();
 
     String page = "{\"ip\": \"";
-    page += ipString(WiFi.localIP());
+    page += WiFi.localIP().toString();
     page += ":";
     page += serverPort;
     page += "\"}";
@@ -415,6 +405,8 @@ void handleS()
 // JSON format for initial or full data read
 void handleJson()
 {
+  parseParams();
+
   String page = "{\"carThresh\": ";
   page += ee.nCarThresh;
   page += ", \"doorThresh\": ";
@@ -647,7 +639,6 @@ void loop()
 
 void DrawScreen()
 {
-  static int16_t ind;
   // draw the screen here
   display.clear();
 
@@ -664,11 +655,8 @@ void DrawScreen()
     s += " ";
     s += months[month()-1];
     s += "  ";
-    int len = s.length();
-    s = s + s;
 
-    int w = display.drawPropString(ind, 0, s );
-    if( --ind < -(w)) ind = 0;
+    Scroller(s);
 
     display.drawPropString( 2, 23, bDoorOpen ? "Open":"Closed" );
     display.drawPropString(80, 23, bCarIn ? "In":"Out" );
@@ -680,13 +668,40 @@ void DrawScreen()
   display.display();
 }
 
+// Text scroller optimized for very long lines
+void Scroller(String s)
+{
+  static int16_t ind = 0;
+  static char last = 0;
+  static int16_t x = 0;
+
+  if(last != s.charAt(0)) // reset if content changed
+  {
+    x = 0;
+    ind = 0;
+  }
+  last = s.charAt(0);
+  int len = s.length(); // get length before overlap added
+  s += s.substring(0, 18); // add ~screen width overlap
+  int w = display.propCharWidth(s.charAt(ind)); // first char for measure
+  String sPart = s.substring(ind, ind + 18);
+  display.drawPropString(x, 0, sPart );
+
+  if( --x <= -(w))
+  {
+    x = 0;
+    if(++ind >= len) // reset at last char
+      ind = 0;
+  }
+}
+
 void pulseRemote()
 {
   if(bDoorOpen == false) // closing door
   {
     doorOpenTimer = ee.closeTimeout; // set the short timeout 
   }
-  Serial.println("pulseRemote");
+//  Serial.println("pulseRemote");
   digitalWrite(REMOTE, HIGH);
   delay(1000);
   digitalWrite(REMOTE, LOW);
