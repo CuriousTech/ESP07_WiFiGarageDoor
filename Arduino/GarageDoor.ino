@@ -106,7 +106,7 @@ String dataJson()
     String s = "{";
     s += "\"t\": ";
     s += now() - ((ee.tz + dst) * 3600);
-    s += "\"door\": ";
+    s += ",\"door\": ";
     s += bDoorOpen;
     s += ",\"car\": ";
     s += bCarIn;
