@@ -75,7 +75,10 @@ struct eeSet // EEPROM backed data
   uint16_t closeTimeout;
   int8_t   tempCal;
   bool     bEnableOLED;
+  uint16_t delayClose;
+  uint16_t res1[8];
   char     pbToken[40];
+  uint16_t res2[8];
 };
 eeSet ee = { sizeof(eeSet), 0xAAAA,
   -5, 0,     // TZ, dst
@@ -84,7 +87,10 @@ eeSet ee = { sizeof(eeSet), 0xAAAA,
   60,        // closeTimeout (seconds)
   0,         // adjust for error
   true,    // OLED
-  "pushbullet token" // pushbullet token
+  10, // delayClose
+  {0},
+  "pushbullet token", // pushbullet token
+  {0}
 };
 
 int ee_sum; // sum for checking if any setting has changed
@@ -93,10 +99,14 @@ bool bCarIn;
 uint16_t doorVal;
 uint16_t carVal;
 uint16_t doorOpenTimer;
+uint16_t doorDelay;
 
 String dataJson()
 {
-    String s = "{\"door\": ";
+    String s = "{";
+    s += "\"t\": ";
+    s += now() - ((ee.tz + dst) * 3600);
+    s += "\"door\": ";
     s += bDoorOpen;
     s += ",\"car\": ";
     s += bCarIn;
@@ -166,9 +176,8 @@ void parseParams()
  
     switch( server.argName(i).charAt(0)  )
     {
-      case 'Z': // TZ
-          ee.tz = val;
-          getUdpTime();
+      case 'A': // close/open delay
+          ee.delayClose = val;
           break;
       case 'C': // close timeout (set a bit higher than it takes to close)
           ee.closeTimeout = val;
@@ -190,13 +199,18 @@ void parseParams()
           ee.tempCal = val;
           break;
       case 'D': // Door (pulse the output)
-          pulseRemote();
+          if(val) doorDelay = ee.delayClose;
+          else pulseRemote();
           break;
       case 'O': // OLED
           ee.bEnableOLED = (s == "true") ? true:false;
           break;
       case 'p': // pushbullet
           s.toCharArray( ee.pbToken, sizeof(ee.pbToken) );
+          break;
+      case 'Z': // TZ
+          ee.tz = val;
+          getUdpTime();
           break;
     }
   }
@@ -241,53 +255,53 @@ void handleRoot() // Main webpage interface
   page += ee.bEnableOLED;
   page += ";"
     "function startEvents()"
-    "{"
-      "eventSource = new EventSource(\"events?i=60&p=1\");"
-      "eventSource.addEventListener('open', function(e){},false);"
-      "eventSource.addEventListener('error', function(e){},false);"
-      "eventSource.addEventListener('alert', function(e){alert(e.data)},false);"
-      "eventSource.addEventListener('state',function(e){"
-        "d = JSON.parse(e.data);"
-        "a.car.innerHTML = d.car?\"IN\":\"OUT\";"
-        "a.car.setAttribute('class',d.car?'':'style5');"
-        "a.door.innerHTML = d.door?\"OPEN\":\"CLOSED\";"
-        "a.door.setAttribute('class',d.door?'style5':'');"
-        "a.doorBtn.value = d.door?\"Close\":\"Open\";"
-        "a.temp.innerHTML = d.temp+\"&degF\";"
-        "a.rh.innerHTML = d.rh+'%';"
-      "},false)"
-    "}"
-    "function setDoor(){"
-    "$.post(\"s\", { D: 0, key: document.all.myKey.value })"
-    "}"
+    "{\n"
+      "eventSource = new EventSource(\"events?i=60&p=1\")\n"
+      "eventSource.addEventListener('open', function(e){},false)\n"
+      "eventSource.addEventListener('error', function(e){},false)\n"
+      "eventSource.addEventListener('alert', function(e){alert(e.data)},false)\n"
+      "eventSource.addEventListener('state',function(e){\n"
+        "d = JSON.parse(e.data)\n"
+        "dt=new Date(d.t*1000)\n"
+        "a.time.innerHTML = dt.toLocaleTimeString()\n"
+        "a.car.innerHTML = d.car?\"IN\":\"OUT\"\n"
+        "a.car.setAttribute('class',d.car?'':'style5')\n"
+        "a.door.innerHTML = d.door?\"OPEN\":\"CLOSED\"\n"
+        "a.door.setAttribute('class',d.door?'style5':'')\n"
+        "a.doorBtn.value = d.door?\"Close\":\"Open\"\n"
+        "a.temp.innerHTML = d.temp+\"&degF\"\n"
+        "a.rh.innerHTML = d.rh+'%'\n"
+      "},false)\n"
+    "}\n"
+    "function setDoor(n){\n"
+      "$.post(\"s\", { D: n, key: a.myKey.value })\n"
+    "}\n"
     "function oled(){"
-      "oledon=!oledon;"
-      "$.post(\"s\", { O: oledon, key: document.all.myKey.value });"
-      "document.all.OLED.value=oledon?'OFF':'ON'"
-    "}"
-    "setInterval(timer,1000);"
-    "t=";
-    page += now() - ((ee.tz + dst) * 3600); // set to GMT
-    page +="000;function timer(){" // add 000 for ms
-          "t+=1000;d=new Date(t);"
-          "document.all.time.innerHTML=d.toLocaleTimeString()}"
-      "</script>"
+      "oledon=!oledon\n"
+      "$.post(\"s\", { O: oledon, key: a.myKey.value })\n"
+      "a.OLED.value=oledon?'OFF':'ON'\n"
+    "}\n"
+     "</script>\n"
 
-      "<body onload=\"{"
-      "key = localStorage.getItem('key'); if(key!=null) document.getElementById('myKey').value = key;"
-      "for(i=0;i<document.forms.length;i++) document.forms[i].elements['key'].value = key;"
-      "startEvents();}\">";
+      "<body onload=\"{\n"
+      "key=localStorage.getItem('key')\nif(key!=null) document.getElementById('myKey').value=key\n"
+      "for(i=0;i<document.forms.length;i++) document.forms[i].elements['key'].value=key\n"
+      "startEvents()\n}\">";
 
-    page += "<div><h3>WiFi Garage Door Opener </h3>"
-            "<table align=\"center\">"
-            "<tr align=\"center\"><td><p id=\"time\">";
+    page += "<div><h3>WiFi Garage Door Opener </h3>\n"
+            "<table align=center>\n"
+            "<tr align=center><td><p id=\"time\">";
     page += timeFmt(true, true);
     page += "</p></td><td>";
-    page += "<input type=\"button\" value=\"Open\" id=\"doorBtn\" onClick=\"{setDoor()}\">";
-    page += "</td></tr>"
-          "<tr align=\"center\"><td>Garage</td>"
+    page += "<input type=\"button\" value=\"Open\" id=\"doorBtn\" onClick=\"{setDoor(0)}\">";
+    page += "</td></tr>\n<tr><td>";
+
+    page += valButton("A", String(ee.delayClose) );
+    page += "</td><td align=center>";
+    page += "<input type=\"button\" value=\"Delayed\" id=\"doorBtn\" onClick=\"{setDoor(1)}\">";    
+    page += "</td></tr>\n<tr align=center><td>Garage</td>"
           "<td>Car</td>"
-          "</tr><tr align=\"center\">"
+          "</tr>\n<tr align=center>"
           "<td>"
           "<div id=\"door\"";
     if(bDoorOpen)
@@ -301,29 +315,29 @@ void handleRoot() // Main webpage interface
       page += " class='style5'";
     page += ">";
     page += bCarIn ? "IN" : "OUT";
-    page += "</div></td></tr>"
+    page += "</div></td></tr>\n"
             "<tr align=\"center\"><td>" // temp/rh row
             "<div id=\"temp\">";
     page +=  String(adjTemp(), 1);
     page += "&degF</div></td><td><div id=\"rh\">";
     page += String(rh, 1);
-    page += "%</div></td></tr><tr align=\"center\"><td>Timeout</td><td>Timezone</td></tr>"
+    page += "%</div></td></tr>\n<tr align=center><td>Timeout</td><td>Timezone</td></tr>"
             "<tr><td>";
     page += valButton("C", String(ee.closeTimeout) );
     page += "</td><td>";  page += valButton("Z", String(ee.tz) );
-    page += "</td></tr>"
+    page += "</td></tr>\n"
             "<tr><td>Display:</td><td>"
             "<input type=\"button\" value=\"";
     page += ee.bEnableOLED ? "OFF":"ON";
     page += "\" id=\"OLED\" onClick=\"{oled()}\">"
-            "</td></tr>"
+            "</td></tr>\n"
 
-            "</table>"
+            "</table>\n"
             "<input id=\"myKey\" name=\"key\" type=text size=50 placeholder=\"password\" style=\"width: 150px\">"
-            "<input type=\"button\" value=\"Save\" onClick=\"{localStorage.setItem('key', key = document.all.myKey.value)}\">"
+            "<input type=\"button\" value=\"Save\" onClick=\"{localStorage.setItem('key', key=document.all.myKey.value)}\">\n"
             "<br><small>Logged IP: ";
     page += server.client().remoteIP().toString();
-    page += "</small></div></body></html>";
+    page += "</small></div>\n</body>\n</html>";
 
     server.send ( 200, "text/html", page );
 }
@@ -423,6 +437,8 @@ void handleJson()
   page += ee.alarmTimeout;
   page += ", \"closeTimeout\": ";
   page += ee.closeTimeout;
+  page += ", \"delay\": ";
+  page += ee.delayClose;
   page += ",\"temp\": \"";
   page += String(adjTemp(), 1);
   page += "\",\"rh\": \"";
@@ -485,7 +501,6 @@ void handleNotFound() {
   server.send ( 404, "text/plain", message );
 }
 
-
 void setup()
 {
   pinMode(ESP_LED, OUTPUT);
@@ -507,7 +522,7 @@ void setup()
   Serial.println();
   Serial.println();
 
-  WiFi.hostname("gdo");
+  WiFi.hostname("GDO");
   wifi.autoConnect("GDO");
   eeRead(); // don't access EE before WiFi init
 
@@ -580,12 +595,12 @@ void loop()
       event.push();
     }
 
-    if (hour_save != hour()) // update our IP and time daily (at 2AM for DST)
+    if (hour_save != hour())
     {
       hour_save = hour();
       if(hour_save == 2)
       {
-        getUdpTime();
+        getUdpTime(); // update time daily at DST change
       }
       eeWrite(); // update EEPROM if needed while we're at it (give user time to make many adjustments)
     }
@@ -608,7 +623,15 @@ void loop()
 
     event.heartbeat();
 
-    if(doorOpenTimer)
+    if(doorDelay) // delayed close/open
+    {
+      if(--doorDelay == 0)
+      {
+        pulseRemote();
+      }
+    }
+
+    if(doorOpenTimer && doorDelay == 0) // door open watchdog
     {
       if(--doorOpenTimer == 0)
       {
@@ -813,6 +836,7 @@ bool checkUdpTime()
   {
     if(++retry > 500)
      {
+        bNeedUpdate = false;
         getUdpTime();
         retry = 0;
      }
