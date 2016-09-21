@@ -35,7 +35,8 @@ SOFTWARE.
 #include "WiFiManager.h"
 #include <ESP8266WebServer.h>
 #include <Event.h>  // https://github.com/CuriousTech/ESP8266-HVAC/tree/master/Libraries/Event
- 
+#include "RunningMedian.h"
+
 const char controlPassword[] = "password"; // device password for modifying any settings
 int serverPort = 84;                    // port fwd for fwdip.php
 
@@ -553,12 +554,11 @@ void setup()
 void loop()
 {
   static uint8_t hour_save, sec_save;
-  static uint8_t tog = 0;
   static uint8_t cnt = 0;
 #define ANA_AVG 24
-  static uint16_t vals[2][ANA_AVG];
-  static uint8_t ind[2];
   bool bNew;
+
+  static RunningMedian<uint16_t,ANA_AVG> rangeMedian[2];
 
   MDNS.update();
   server.handleClient();
@@ -570,10 +570,7 @@ void loop()
   {
     sec_save = second();
 
-    doorVal = 0;
-    for(int i = 0; i < ANA_AVG; i++)
-      doorVal += vals[0][i];
-    doorVal /= ANA_AVG;
+    rangeMedian[1].getMedian(doorVal);
     bNew = (doorVal > ee.nDoorThresh) ? true:false;
     if(bNew != bDoorOpen)
     {
@@ -582,11 +579,7 @@ void loop()
         event.push();
     }
 
-    carVal = 0;
-    for(int i = 0; i < ANA_AVG; i++)
-      carVal += vals[1][i];
-    carVal /= ANA_AVG;
-
+    rangeMedian[0].getMedian(carVal);
     bNew = (carVal < ee.nCarThresh) ? true:false; // lower is closer
 
     if(bNew != bCarIn)
@@ -640,15 +633,11 @@ void loop()
       }
     }
 
-    unsigned long range;
-
-    digitalWrite(TRIG, HIGH); // pulse the rangefinder
+    digitalWrite(TRIG, HIGH); // pulse the ultrasonic rangefinder
     delayMicroseconds(10);
     digitalWrite(TRIG, LOW);
-    range = ( (pulseIn(ECHO, HIGH) / 2) / 29.1 );
-    vals[1][ind[1]] = range; // read current IR sensor value into current circle buf
-    if(++ind[1] >= ANA_AVG) ind[1] = 0;
-    
+    rangeMedian[0].add( (uint16_t)((pulseIn(ECHO, HIGH) / 2) / 29.1) );
+  
     digitalWrite(ESP_LED, LOW);
     delay(20);
     digitalWrite(ESP_LED, HIGH);
@@ -656,8 +645,7 @@ void loop()
 
   DrawScreen();
 
-  vals[tog][ind[tog]] = analogRead(A0); // read current IR sensor value into current circle buf
-  if(++ind[tog] >= ANA_AVG) ind[tog] = 0;
+  rangeMedian[1].add( analogRead(A0) ); // read current IR sensor value (might be too high rate)
 }
 
 void DrawScreen()
