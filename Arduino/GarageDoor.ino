@@ -21,21 +21,20 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-// Build with Arduino IDE 1.6.8, esp8266 SDK 2.2.0
+// Build with Arduino IDE 1.6.11, esp8266 SDK 2.3.0
 
 #include <Wire.h>
 #include <DHT.h> // http://www.github.com/markruys/arduino-DHT
-#include <TimeLib.h> // http://www.pjrc.com/teensy/td_libs_Time.html
 #include <ssd1306_i2c.h> // https://github.com/CuriousTech/WiFi_Doorbell/tree/master/Libraries/ssd1306_i2c
 
-#include <WiFiClient.h>
 #include <WiFiClientSecure.h>
 #include <EEPROM.h>
 #include <ESP8266mDNS.h>
 #include "WiFiManager.h"
-#include <ESP8266WebServer.h>
-#include <Event.h>  // https://github.com/CuriousTech/ESP8266-HVAC/tree/master/Libraries/Event
+#include <ESPAsyncWebServer.h> // https://github.com/me-no-dev/ESPAsyncWebServer
 #include "RunningMedian.h"
+#include <TimeLib.h> // http://www.pjrc.com/teensy/td_libs_Time.html
+// Note: remove "Time.h" from the TimeLib library and rename "Time.h" to "TimeLib.h" for any includes in it.
 
 const char controlPassword[] = "password"; // device password for modifying any settings
 int serverPort = 84;                    // port fwd for fwdip.php
@@ -52,7 +51,9 @@ int nWrongPass;
 SSD1306 display(0x3c, 5, 4); // Initialize the oled display for address 0x3c, sda=5, sdc=4
 
 WiFiManager wifi(0);  // AP page:  192.168.4.1
-ESP8266WebServer server( serverPort );
+AsyncWebServer server( serverPort );
+AsyncEventSource events("/events"); // event source (Server-Sent events)
+
 const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
 byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
 WiFiUDP Udp;
@@ -119,23 +120,23 @@ String dataJson()
     return s;
 }
 
-eventHandler event(dataJson);
-
-void parseParams()
+void parseParams(AsyncWebServerRequest *request)
 {
   char temp[100];
   char password[64];
  
   Serial.println("parseParams");
 
-  if(server.args() == 0)
+  if(request->params() == 0)
     return;
 
   // get password first
-  for ( uint8_t i = 0; i < server.args(); i++ ) {
-    server.arg(i).toCharArray(temp, 100);
+  for ( uint8_t i = 0; i < request->params(); i++ ) {
+    AsyncWebParameter* p = request->getParam(i);
+
+    p->value().toCharArray(temp, 100);
     String s = wifi.urldecode(temp);
-    switch( server.argName(i).charAt(0)  )
+    switch( p->name().charAt(0)  )
     {
       case 'k': // key
         s.toCharArray(password, sizeof(password));
@@ -143,9 +144,9 @@ void parseParams()
     }
   }
 
-  uint32_t ip = server.client().remoteIP();
+  uint32_t ip = request->client()->localIP();
 
-  if(server.args() == 0)
+  if(request->params() == 0)
     return;
 
   if(strcmp(password, controlPassword))
@@ -157,25 +158,25 @@ void parseParams()
     if(ip != lastIP)  // if different IP drop it down
        nWrongPass = 10;
     String data = "{\"ip\":\"";
-    data += server.client().remoteIP().toString();
+    data += request->client()->localIP().toString();
     data += "\",\"pass\":\"";
     data += password;
     data += "\"}";
-    event.push("hack", data); // log attempts
+    events.send(data.c_str(), "hack" ); // log attempts
     lastIP = ip;
     return;
   }
 
   lastIP = ip;
 
-  for ( uint8_t i = 0; i < server.args(); i++ ) {
-    server.arg(i).toCharArray(temp, 100);
+  for ( uint8_t i = 0; i < request->params(); i++ ) {
+    AsyncWebParameter* p = request->getParam(i);
+    p->value().toCharArray(temp, 100);
     String s = wifi.urldecode(temp);
-//    Serial.println( i + " " + server.argName ( i ) + ": " + s);
-    bool which = (tolower(server.argName(i).charAt(1) ) == 'd') ? 1:0;
+    bool which = (tolower(p->name().charAt(1) ) == 'd') ? 1:0;
     int val = s.toInt();
  
-    switch( server.argName(i).charAt(0)  )
+    switch( p->name().charAt(0)  )
     {
       case 'A': // close/open delay
           ee.delayClose = val;
@@ -217,11 +218,19 @@ void parseParams()
   }
 }
 
-void handleRoot() // Main webpage interface
+void onBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
+  //Handle body
+}
+
+void onUpload(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
+  //Handle upload
+}
+
+void handleRoot(AsyncWebServerRequest *request) // Main webpage interface
 {
   Serial.println("handleRoot");
 
-  parseParams();
+  parseParams(request);
 
     String page = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>"
       "<title>WiFi Garage Door Opener</title>"
@@ -337,10 +346,10 @@ void handleRoot() // Main webpage interface
             "<input id=\"myKey\" name=\"key\" type=text size=50 placeholder=\"password\" style=\"width: 150px\">"
             "<input type=\"button\" value=\"Save\" onClick=\"{localStorage.setItem('key', key=document.all.myKey.value)}\">\n"
             "<br><small>Logged IP: ";
-    page += server.client().remoteIP().toString();
+    page += request->client()->localIP().toString();
     page += "</small></div>\n</body>\n</html>";
 
-    server.send ( 200, "text/html", page );
+    request->send ( 200, "text/html", page );
 }
 
 float adjTemp()
@@ -405,22 +414,22 @@ String timeFmt(bool do_sec, bool do_M)
   return r;
 }
 
-void handleS()
+void handleS(AsyncWebServerRequest *request)
 {
-    parseParams();
+    parseParams(request);
 
     String page = "{\"ip\": \"";
     page += WiFi.localIP().toString();
     page += ":";
     page += serverPort;
     page += "\"}";
-    server.send ( 200, "text/json", page );
+    request->send( 200, "text/json", page );
 }
 
 // JSON format for initial or full data read
-void handleJson()
+void handleJson(AsyncWebServerRequest *request)
 {
-  parseParams();
+  parseParams(request);
 
   String page = "{\"carThresh\": ";
   page += ee.nCarThresh;
@@ -446,11 +455,16 @@ void handleJson()
   page += String(adjRh(), 1);
   page += "\"}";
 
-  server.send( 200, "text/json", page );
+  request->send( 200, "text/json", page );
+}
+
+void onRequest(AsyncWebServerRequest *request){
+  //Handle Unknown Request
+  request->send(404);
 }
 
 // event streamer (assume keep-alive) (esp8266 2.1.0 can't handle this)
-void handleEvents()
+/*void handleEvents()
 {
   char temp[100];
   Serial.println("handleEvents");
@@ -484,22 +498,11 @@ void handleEvents()
   server.sendContent(content);
   event.set(server.client(), interval, nType); // copying the client before the send makes it work with SDK 2.2.0
 }
+*/
 
-void handleNotFound() {
-  String message = "File Not Found\n\n";
-  message += "URI: ";
-  message += server.uri();
-  message += "\nMethod: ";
-  message += ( server.method() == HTTP_GET ) ? "GET" : "POST";
-  message += "\nArguments: ";
-  message += server.args();
-  message += "\n";
-
-  for ( uint8_t i = 0; i < server.args(); i++ ) {
-    message += " " + server.argName ( i ) + ": " + server.arg ( i ) + "\n";
-  }
-
-  server.send ( 404, "text/plain", message );
+void onEvents(AsyncEventSourceClient *client)
+{
+  client->send(":ok", NULL, millis(), 1000);
 }
 
 void setup()
@@ -536,15 +539,20 @@ void setup()
     Serial.println ( "MDNS responder started" );
   }
 
-  server.on ( "/", handleRoot );
-  server.on ( "/s", handleS );
-  server.on ( "/json", handleJson );
-  server.on ( "/events", handleEvents );
-//  server.on ( "/inline", []() {
-//    server.send ( 200, "text/plain", "this works as well" );
-//  } );
-  server.onNotFound ( handleNotFound );
+  // attach AsyncEventSource
+  events.onConnect(onEvents);
+  server.addHandler(&events);
+
+  server.on ( "/", HTTP_GET, handleRoot );
+  server.on ( "/s", HTTP_GET, handleS );
+  server.on ( "/json", HTTP_GET, handleJson );
+
+  server.onNotFound(onRequest);
+  server.onFileUpload(onUpload);
+  server.onRequestBody(onBody);
+
   server.begin();
+
   MDNS.addService("http", "tcp", serverPort);
 
   dht.setup(DHT_22, DHT::DHT22);
@@ -561,7 +569,6 @@ void loop()
   static RunningMedian<uint16_t,ANA_AVG> rangeMedian[2];
 
   MDNS.update();
-  server.handleClient();
 
   if(bNeedUpdate)
     checkUdpTime();
@@ -576,7 +583,7 @@ void loop()
     {
         bDoorOpen = bNew;
         doorOpenTimer = bDoorOpen ? ee.alarmTimeout : 0;
-        event.push();
+        events.send(dataJson().c_str(), "state");
     }
 
     rangeMedian[0].getMedian(carVal);
@@ -585,7 +592,7 @@ void loop()
     if(bNew != bCarIn)
     {
       bCarIn = bNew;
-      event.push();
+      events.send(dataJson().c_str(), "state" );
     }
 
     if (hour_save != hour())
@@ -608,13 +615,11 @@ void loop()
       {
         temp = newtemp;
         rh = newrh;
-        event.pushInstant();
+        events.send(dataJson().c_str(), "state" );
       }
     }
     if(nWrongPass)
       nWrongPass--;
-
-    event.heartbeat();
 
     if(doorDelay) // delayed close/open
     {
@@ -628,7 +633,7 @@ void loop()
     {
       if(--doorOpenTimer == 0)
       {
-        event.alert("Door not closed");
+        events.send("Door not closed", "alert" );
         pushBullet("GDO", "Door not closed");
       }
     }
@@ -645,7 +650,7 @@ void loop()
 
   DrawScreen();
 
-  rangeMedian[1].add( analogRead(A0) ); // read current IR sensor value (might be too high rate)
+  rangeMedian[1].add( analogRead(A0) ); // read current IR sensor value
 }
 
 void DrawScreen()
@@ -872,7 +877,7 @@ void pushBullet(const char *pTitle, const char *pBody)
 
   if (!client.connect(host, 443))
   {
-    event.print("PushBullet connection failed");
+    events.send("PushBullet connection failed","print");
     return;
   }
 
