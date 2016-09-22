@@ -543,9 +543,9 @@ void setup()
   events.onConnect(onEvents);
   server.addHandler(&events);
 
-  server.on ( "/", HTTP_GET, handleRoot );
-  server.on ( "/s", HTTP_GET, handleS );
-  server.on ( "/json", HTTP_GET, handleJson );
+  server.on ( "/", HTTP_GET | HTTP_POST, handleRoot );
+  server.on ( "/s", HTTP_GET | HTTP_POST, handleS );
+  server.on ( "/json", HTTP_GET | HTTP_POST, handleJson );
 
   server.onNotFound(onRequest);
   server.onFileUpload(onUpload);
