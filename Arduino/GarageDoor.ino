@@ -27,7 +27,6 @@ SOFTWARE.
 #include <DHT.h> // http://www.github.com/markruys/arduino-DHT
 #include <ssd1306_i2c.h> // https://github.com/CuriousTech/WiFi_Doorbell/tree/master/Libraries/ssd1306_i2c
 
-#include <WiFiClientSecure.h>
 #include <EEPROM.h>
 #include <ESP8266mDNS.h>
 #include "WiFiManager.h"
@@ -35,6 +34,8 @@ SOFTWARE.
 #include "RunningMedian.h"
 #include <TimeLib.h> // http://www.pjrc.com/teensy/td_libs_Time.html
 // Note: remove "Time.h" from the TimeLib library and rename "Time.h" to "TimeLib.h" for any includes in it.
+#include "PushBullet.h"
+#include "eeMem.h"
 
 const char controlPassword[] = "password"; // device password for modifying any settings
 int serverPort = 84;                    // port fwd for fwdip.php
@@ -50,9 +51,11 @@ int nWrongPass;
 
 SSD1306 display(0x3c, 5, 4); // Initialize the oled display for address 0x3c, sda=5, sdc=4
 
-WiFiManager wifi(0);  // AP page:  192.168.4.1
+WiFiManager wifi;  // AP page:  192.168.4.1
 AsyncWebServer server( serverPort );
 AsyncEventSource events("/events"); // event source (Server-Sent events)
+
+PushBullet pb;
 
 const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
 byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
@@ -65,37 +68,8 @@ float temp;
 float rh;
 int httpPort = 80; // may be modified by open AP scan
 
-struct eeSet // EEPROM backed data
-{
-  uint16_t size;          // if size changes, use defauls
-  uint16_t sum;           // if sum is diiferent from memory struct, write
-  int8_t   tz;            // Timezone offset
-  uint8_t  dst;
-  uint16_t nCarThresh;
-  uint16_t nDoorThresh;
-  uint16_t alarmTimeout;
-  uint16_t closeTimeout;
-  int8_t   tempCal;
-  bool     bEnableOLED;
-  uint16_t delayClose;
-  uint16_t res1[8];
-  char     pbToken[40];
-  uint16_t res2[8];
-};
-eeSet ee = { sizeof(eeSet), 0xAAAA,
-  -5, 0,     // TZ, dst
-  500, 900,  // thresholds
-  5*60,      // alarmTimeout
-  60,        // closeTimeout (seconds)
-  0,         // adjust for error
-  true,    // OLED
-  10, // delayClose
-  {0},
-  "pushbullet token", // pushbullet token
-  {0}
-};
+eeMem eemem;
 
-int ee_sum; // sum for checking if any setting has changed
 bool bDoorOpen;
 bool bCarIn;
 uint16_t doorVal;
@@ -125,10 +99,10 @@ void parseParams(AsyncWebServerRequest *request)
   char temp[100];
   char password[64];
  
-  Serial.println("parseParams");
-
   if(request->params() == 0)
     return;
+
+  Serial.println("parseParams");
 
   // get password first
   for ( uint8_t i = 0; i < request->params(); i++ ) {
@@ -144,10 +118,7 @@ void parseParams(AsyncWebServerRequest *request)
     }
   }
 
-  uint32_t ip = request->client()->localIP();
-
-  if(request->params() == 0)
-    return;
+  uint32_t ip = request->client()->remoteIP();
 
   if(strcmp(password, controlPassword))
   {
@@ -158,7 +129,7 @@ void parseParams(AsyncWebServerRequest *request)
     if(ip != lastIP)  // if different IP drop it down
        nWrongPass = 10;
     String data = "{\"ip\":\"";
-    data += request->client()->localIP().toString();
+    data += request->client()->remoteIP().toString();
     data += "\",\"pass\":\"";
     data += password;
     data += "\"}";
@@ -228,9 +199,11 @@ void onUpload(AsyncWebServerRequest *request, String filename, size_t index, uin
 
 void handleRoot(AsyncWebServerRequest *request) // Main webpage interface
 {
-  Serial.println("handleRoot");
+//  Serial.println("handleRoot");
 
   parseParams(request);
+
+  AsyncResponseStream *response = request->beginResponseStream("text/html");
 
     String page = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>"
       "<title>WiFi Garage Door Opener</title>"
@@ -262,6 +235,8 @@ void handleRoot(AsyncWebServerRequest *request) // Main webpage interface
     "<script type=\"text/javascript\">\n"
     "a=document.all;"
     "oledon=";
+  response->print(page);
+  page = "";
   page += ee.bEnableOLED;
   page += ";"
     "function startEvents()"
@@ -346,10 +321,11 @@ void handleRoot(AsyncWebServerRequest *request) // Main webpage interface
             "<input id=\"myKey\" name=\"key\" type=text size=50 placeholder=\"password\" style=\"width: 150px\">"
             "<input type=\"button\" value=\"Save\" onClick=\"{localStorage.setItem('key', key=document.all.myKey.value)}\">\n"
             "<br><small>Logged IP: ";
-    page += request->client()->localIP().toString();
+    page += request->client()->remoteIP().toString();
     page += "</small></div>\n</body>\n</html>";
 
-    request->send ( 200, "text/html", page );
+    response->print(page);
+    request->send ( response );
 }
 
 float adjTemp()
@@ -463,43 +439,6 @@ void onRequest(AsyncWebServerRequest *request){
   request->send(404);
 }
 
-// event streamer (assume keep-alive) (esp8266 2.1.0 can't handle this)
-/*void handleEvents()
-{
-  char temp[100];
-  Serial.println("handleEvents");
-  uint16_t interval = 60; // default interval
-  uint8_t nType = 0;
-
-  for ( uint8_t i = 0; i < server.args(); i++ ) {
-    server.arg(i).toCharArray(temp, 100);
-    String s = wifi.urldecode(temp);
-//    Serial.println( i + " " + server.argName ( i ) + ": " + s);
-    int val = s.toInt();
- 
-    switch( server.argName(i).charAt(0)  )
-    {
-      case 'i': // interval
-        interval = val;
-        break;
-      case 'p': // push
-        nType = 1;
-        break;
-      case 'c': // critical
-        nType = 2;
-        break;
-    }
-  }
-
-  String content = "HTTP/1.1 200 OK\r\n"
-      "Connection: keep-alive\r\n"
-      "Access-Control-Allow-Origin: *\r\n"
-      "Content-Type: text/event-stream\r\n\r\n";
-  server.sendContent(content);
-  event.set(server.client(), interval, nType); // copying the client before the send makes it work with SDK 2.2.0
-}
-*/
-
 void onEvents(AsyncEventSourceClient *client)
 {
   client->send(":ok", NULL, millis(), 1000);
@@ -528,7 +467,6 @@ void setup()
 
   WiFi.hostname("GDO");
   wifi.autoConnect("GDO");
-  eeRead(); // don't access EE before WiFi init
 
   Serial.println("");
   Serial.println("WiFi connected");
@@ -602,7 +540,7 @@ void loop()
       {
         getUdpTime(); // update time daily at DST change
       }
-      eeWrite(); // update EEPROM if needed while we're at it (give user time to make many adjustments)
+      eemem.update(); // update EEPROM if needed while we're at it (give user time to make many adjustments)
     }
 
     static uint8_t dht_cnt = 5;
@@ -634,7 +572,7 @@ void loop()
       if(--doorOpenTimer == 0)
       {
         events.send("Door not closed", "alert" );
-        pushBullet("GDO", "Door not closed");
+        pb.send("GDO", "Door not closed", ee.pbToken);
       }
     }
 
@@ -721,45 +659,6 @@ void pulseRemote()
   digitalWrite(REMOTE, HIGH);
   delay(1000);
   digitalWrite(REMOTE, LOW);
-}
-
-void eeWrite() // write the settings if changed
-{
-  uint16_t old_sum = ee.sum;
-  ee.sum = 0;
-  ee.sum = Fletcher16((uint8_t *)&ee, sizeof(eeSet));
-
-  if(old_sum == ee.sum)
-    return; // Nothing has changed?
-
-  wifi.eeWriteData(64, (uint8_t*)&ee, sizeof(ee)); // WiFiManager already has an instance open, so use that at offset 64+
-}
-
-void eeRead()
-{
-  eeSet eeTest;
-
-  wifi.eeReadData(64, (uint8_t*)&eeTest, sizeof(eeSet));
-  if(eeTest.size != sizeof(eeSet)) return; // revert to defaults if struct size changes
-  uint16_t sum = eeTest.sum;
-  eeTest.sum = 0;
-  eeTest.sum = Fletcher16((uint8_t *)&eeTest, sizeof(eeSet));
-  if(eeTest.sum != sum) return; // revert to defaults if sum fails
-  memcpy(&ee, &eeTest, sizeof(eeSet));
-}
-
-uint16_t Fletcher16( uint8_t* data, int count)
-{
-   uint16_t sum1 = 0;
-   uint16_t sum2 = 0;
-
-   for( int index = 0; index < count; ++index )
-   {
-      sum1 = (sum1 + data[index]) % 255;
-      sum2 = (sum2 + sum1) % 255;
-   }
-
-   return (sum2 << 8) | sum1;
 }
 
 void getUdpTime()
@@ -867,39 +766,4 @@ bool checkUdpTime()
 //  Serial.println(timeFmt(true, true));
   bNeedUpdate = false;
   return true;
-}
-
-void pushBullet(const char *pTitle, const char *pBody)
-{
-  WiFiClientSecure client;
-  const char host[] = "api.pushbullet.com";
-  const char url[] = "/v2/pushes";
-
-  if (!client.connect(host, 443))
-  {
-    events.send("PushBullet connection failed","print");
-    return;
-  }
-
-  String data = "{\"type\": \"note\", \"title\": \"";
-  data += pTitle;
-  data += "\", \"body\": \"";
-  data += pBody;
-  data += "\"}";
-
-  client.print(String("POST ") + url + " HTTP/1.1\r\n" +
-              "Host: " + host + "\r\n" +
-              "Content-Type: application/json\r\n" +
-              "Access-Token: " + ee.pbToken + "\r\n" +
-              "User-Agent: Arduino\r\n" +
-              "Content-Length: " + data.length() + "\r\n" + 
-              "Connection: close\r\n\r\n" +
-              data + "\r\n\r\n");
- 
-  int i = 0;
-  while (client.connected() && ++i < 10)
-  {
-    String line = client.readStringUntil('\n');
-    Serial.println(line);
-  }
 }
