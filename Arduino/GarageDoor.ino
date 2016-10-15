@@ -36,6 +36,8 @@ SOFTWARE.
 // Note: remove "Time.h" from the TimeLib library and rename "Time.h" to "TimeLib.h" for any includes in it.
 #include "PushBullet.h"
 #include "eeMem.h"
+#include <JsonClient.h>
+#include "pages.h"
 
 const char controlPassword[] = "password"; // device password for modifying any settings
 int serverPort = 84;                    // port fwd for fwdip.php
@@ -54,8 +56,12 @@ SSD1306 display(0x3c, 5, 4); // Initialize the oled display for address 0x3c, sd
 WiFiManager wifi;  // AP page:  192.168.4.1
 AsyncWebServer server( serverPort );
 AsyncEventSource events("/events"); // event source (Server-Sent events)
+AsyncWebSocket ws("/ws"); // access at ws://[esp ip]/ws
 
 PushBullet pb;
+
+void jsonCallback(int16_t iEvent, uint16_t iName, int iValue, char *psValue);
+JsonClient jsonParse(jsonCallback);
 
 const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
 byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
@@ -79,19 +85,29 @@ uint16_t doorDelay;
 
 String dataJson()
 {
-    String s = "{";
-    s += "\"t\": ";
-    s += now() - ((ee.tz + dst) * 3600);
-    s += ",\"door\": ";
-    s += bDoorOpen;
-    s += ",\"car\": ";
-    s += bCarIn;
-    s += ",\"temp\": \"";
-    s += String(adjTemp(), 1);
-    s += "\",\"rh\": \"";
-    s += String(adjRh(), 1);
-    s += "\"}";
-    return s;
+  String s = "{";
+  s += "\"t\":";
+  s += now() - ((ee.tz + dst) * 3600);
+  s += ",\"door\":";
+  s += bDoorOpen;
+  s += ",\"car\":";
+  s += bCarIn;
+  s += ",\"temp\":\"";
+  s += String(temp + ((float)ee.tempCal/10), 1);
+  s += "\",\"rh\":\"";
+  s += String(rh, 1);
+  s += "\", \"at\":";
+  s += ee.alarmTimeout;
+  s += ", \"ct\":";
+  s += ee.closeTimeout;
+  s += ", \"dc\":";
+  s += ee.delayClose;
+  s += ", \"tz\":";
+  s += ee.tz;
+  s += ", \"o\":";
+  s += ee.bEnableOLED;
+  s += "}";
+  return s;
 }
 
 void parseParams(AsyncWebServerRequest *request)
@@ -177,6 +193,8 @@ void parseParams(AsyncWebServerRequest *request)
           break;
       case 'O': // OLED
           ee.bEnableOLED = (s == "true") ? true:false;
+          display.clear();
+          display.display();
           break;
       case 'p': // pushbullet
           s.toCharArray( ee.pbToken, sizeof(ee.pbToken) );
@@ -202,132 +220,9 @@ void handleRoot(AsyncWebServerRequest *request) // Main webpage interface
 //  Serial.println("handleRoot");
 
   parseParams(request);
-
-  AsyncResponseStream *response = request->beginResponseStream("text/html");
-
-    String page = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>"
-      "<title>WiFi Garage Door Opener</title>"
-      "<style type=\"text/css\">\n"
-      "div,table,input{\n"
-      "border-radius: 5px;\n"
-      "margin-bottom: 5px;\n"
-      "box-shadow: 2px 2px 12px #000000;\n"
-      "background-image: -moz-linear-gradient(top, #ffffff, #50a0ff);\n"
-      "background-image: -ms-linear-gradient(top, #ffffff, #50a0ff);\n"
-      "background-image: -o-linear-gradient(top, #ffffff, #50a0ff);\n"
-      "background-image: -webkit-linear-gradient(top, #efffff, #50a0ff);\n"
-      "background-image: linear-gradient(top, #ffffff, #50a0ff);\n"
-      "background-clip: padding-box;\n"
-      "}\n"
-      "body{width:230px;font-family: Arial, Helvetica, sans-serif;}\n"
-      ".style5 {\n"
-      "border-radius: 5px;\n"
-      "box-shadow: 0px 0px 15px #000000;\n"
-      "background-image: -moz-linear-gradient(top, #ff00ff, #ffa0ff);\n"
-      "background-image: -ms-linear-gradient(top, #ff00ff, #ffa0ff);\n"
-      "background-image: -o-linear-gradient(top, #ff00ff, #ffa0ff);\n"
-      "background-image: -webkit-linear-gradient(top, #ff0000, #ffa0a0);\n"
-      "background-image: linear-gradient(top, #ff00ff, #ffa0ff);\n"
-      "}\n"
-      "</style>"
-
-    "<script src=\"http://ajax.googleapis.com/ajax/libs/jquery/1.3.2/jquery.min.js\" type=\"text/javascript\" charset=\"utf-8\"></script>\n"
-    "<script type=\"text/javascript\">\n"
-    "a=document.all;"
-    "oledon=";
-  response->print(page);
-  page = "";
-  page += ee.bEnableOLED;
-  page += ";"
-    "function startEvents()"
-    "{\n"
-      "eventSource = new EventSource(\"events?i=60&p=1\")\n"
-      "eventSource.addEventListener('open', function(e){},false)\n"
-      "eventSource.addEventListener('error', function(e){},false)\n"
-      "eventSource.addEventListener('alert', function(e){alert(e.data)},false)\n"
-      "eventSource.addEventListener('state',function(e){\n"
-        "d = JSON.parse(e.data)\n"
-        "dt=new Date(d.t*1000)\n"
-        "a.time.innerHTML = dt.toLocaleTimeString()\n"
-        "a.car.innerHTML = d.car?\"IN\":\"OUT\"\n"
-        "a.car.setAttribute('class',d.car?'':'style5')\n"
-        "a.door.innerHTML = d.door?\"OPEN\":\"CLOSED\"\n"
-        "a.door.setAttribute('class',d.door?'style5':'')\n"
-        "a.doorBtn.value = d.door?\"Close\":\"Open\"\n"
-        "a.temp.innerHTML = d.temp+\"&degF\"\n"
-        "a.rh.innerHTML = d.rh+'%'\n"
-      "},false)\n"
-    "}\n"
-    "function setDoor(n){\n"
-      "$.post(\"s\", { D: n, key: a.myKey.value })\n"
-    "}\n"
-    "function oled(){"
-      "oledon=!oledon\n"
-      "$.post(\"s\", { O: oledon, key: a.myKey.value })\n"
-      "a.OLED.value=oledon?'OFF':'ON'\n"
-    "}\n"
-     "</script>\n"
-
-      "<body onload=\"{\n"
-      "key=localStorage.getItem('key')\nif(key!=null) document.getElementById('myKey').value=key\n"
-      "for(i=0;i<document.forms.length;i++) document.forms[i].elements['key'].value=key\n"
-      "startEvents()\n}\">";
-
-    page += "<div><h3>WiFi Garage Door Opener </h3>\n"
-            "<table align=center>\n"
-            "<tr align=center><td><p id=\"time\">";
-    page += timeFmt(true, true);
-    page += "</p></td><td>";
-    page += "<input type=\"button\" value=\"Open\" id=\"doorBtn\" onClick=\"{setDoor(0)}\">";
-    page += "</td></tr>\n<tr><td>";
-
-    page += valButton("A", String(ee.delayClose) );
-    page += "</td><td align=center>";
-    page += "<input type=\"button\" value=\"Delayed\" id=\"doorBtn\" onClick=\"{setDoor(1)}\">";    
-    page += "</td></tr>\n<tr align=center><td>Garage</td>"
-          "<td>Car</td>"
-          "</tr>\n<tr align=center>"
-          "<td>"
-          "<div id=\"door\"";
-    if(bDoorOpen)
-      page += " class='style5'";
-    page += ">";
-    page += bDoorOpen ? "OPEN" : "CLOSED";
-    page += "</div></td>"
-            "<td>"
-            "<div id=\"car\"";
-    if(bCarIn == false)
-      page += " class='style5'";
-    page += ">";
-    page += bCarIn ? "IN" : "OUT";
-    page += "</div></td></tr>\n"
-            "<tr align=\"center\"><td>" // temp/rh row
-            "<div id=\"temp\">";
-    page +=  String(adjTemp(), 1);
-    page += "&degF</div></td><td><div id=\"rh\">";
-    page += String(rh, 1);
-    page += "%</div></td></tr>\n<tr align=center><td>Timeout</td><td>Timezone</td></tr>"
-            "<tr><td>";
-    page += valButton("C", String(ee.closeTimeout) );
-    page += "</td><td>";  page += valButton("Z", String(ee.tz) );
-    page += "</td></tr>\n"
-            "<tr><td>Display:</td><td>"
-            "<input type=\"button\" value=\"";
-    page += ee.bEnableOLED ? "OFF":"ON";
-    page += "\" id=\"OLED\" onClick=\"{oled()}\">"
-            "</td></tr>\n"
-
-            "</table>\n"
-            "<input id=\"myKey\" name=\"key\" type=text size=50 placeholder=\"password\" style=\"width: 150px\">"
-            "<input type=\"button\" value=\"Save\" onClick=\"{localStorage.setItem('key', key=document.all.myKey.value)}\">\n"
-            "<br><small>Logged IP: ";
-    page += request->client()->remoteIP().toString();
-    page += "</small></div>\n</body>\n</html>";
-
-    response->print(page);
-    request->send ( response );
+  request->send_P( 200, "text/html", page1 );
 }
-
+/*
 float adjTemp()
 {
   int t = (temp * 10) + ee.tempCal;
@@ -339,34 +234,7 @@ float adjRh()
   int t = (rh * 10);
   return ((float)t / 10);
 }
-
-String button(String id, String text) // Up/down buttons
-{
-  String s = "<form method='post'><input name='";
-  s += id;
-  s += "' type='submit' value='";
-  s += text;
-  s += "'><input type=\"hidden\" name=\"key\" value=\"value\"></form>";
-  return s;
-}
-
-String sDec(int t)
-{
-  String s = String( t / 10 ) + ".";
-  s += t % 10;
-  return s;
-}
-
-String valButton(String id, String val)
-{
-  String s = "<form method='post'><input name='";
-  s += id;
-  s += "' type=text size=4 value='";
-  s += val;
-  s += "'><input type=\"hidden\" name=\"key\"><input value=\"Set\" type=submit></form>";
-  return s;
-}
-
+*/
 // Time in hh:mm[:ss][AM/PM]
 String timeFmt(bool do_sec, bool do_M)
 {
@@ -426,9 +294,9 @@ void handleJson(AsyncWebServerRequest *request)
   page += ", \"delay\": ";
   page += ee.delayClose;
   page += ",\"temp\": \"";
-  page += String(adjTemp(), 1);
+  page += String(temp + ((float)ee.tempCal/10), 1);
   page += "\",\"rh\": \"";
-  page += String(adjRh(), 1);
+  page += String(rh, 1);
   page += "\"}";
 
   request->send( 200, "text/json", page );
@@ -441,7 +309,106 @@ void onRequest(AsyncWebServerRequest *request){
 
 void onEvents(AsyncEventSourceClient *client)
 {
-  client->send(":ok", NULL, millis(), 1000);
+  static bool rebooted = true;
+  if(rebooted)
+  {
+    rebooted = false;
+    events.send("Restarted", "alert");
+  }
+  events.send(dataJson().c_str(), "state");
+}
+
+const char *jsonList1[] = { "cmd",
+  "key",
+  "doorDelay", // close/open delay
+  "closetimeout", // close timeout
+  "alarmtimeout",
+  "threshDoor",
+  "threshCar",
+  "door",
+  "tempOffset",
+  "oled",
+  "TZ",
+  NULL
+};
+
+bool bKeyGood;
+
+void jsonCallback(int16_t iEvent, uint16_t iName, int iValue, char *psValue)
+{
+  if(bKeyGood == false && iName) return;  // only allow key set
+  switch(iEvent)
+  {
+    case 0: // cmd
+      switch(iName)
+      {
+        case 0: // key
+          if(!strcmp(psValue, controlPassword)) // first item must be key
+            bKeyGood = true;
+          break;
+        case 1: // doorDelay
+          ee.delayClose = iValue;
+          break;
+        case 2: // closeTimeout
+          ee.closeTimeout = iValue;
+          break;
+        case 3:
+          ee.alarmTimeout = iValue;
+          break;
+        case 4: // threshDoor
+          ee.nDoorThresh = iValue;
+          break;
+        case 5: // threshCar
+          ee.nCarThresh = iValue;
+          break;
+        case 6: // Door
+          if(iValue) doorDelay = ee.delayClose;
+          else pulseRemote();
+          break;
+        case 7: // tempOffset
+          ee.tempCal = iValue;
+          break;
+        case 8: // OLED
+          ee.bEnableOLED = iValue ? true:false;
+          break;
+        case 9: // TZ
+          ee.tz = iValue;
+          break;
+      }
+      break;
+  }
+}
+
+void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventType type, void * arg, uint8_t *data, size_t len)
+{  //Handle WebSocket event
+  switch(type)
+  {
+    case WS_EVT_CONNECT:      //client connected
+      client->printf("state;%s", dataJson().c_str());
+      client->ping();
+      break;
+    case WS_EVT_DISCONNECT:    //client disconnected
+      break;
+    case WS_EVT_ERROR:    //error was received from the other end
+      break;
+    case WS_EVT_PONG:    //pong message was received (in response to a ping request maybe)
+      break;
+    case WS_EVT_DATA:  //data packet
+      AwsFrameInfo * info = (AwsFrameInfo*)arg;
+      if(info->final && info->index == 0 && info->len == len){
+        //the whole message is in a single frame and we got all of it's data
+        if(info->opcode == WS_TEXT){
+          data[len] = 0;
+
+          char *pCmd = strtok((char *)data, ";"); // assume format is "name;{json:x}"
+          char *pData = strtok(NULL, "");
+
+          bKeyGood = false; // for callback (all commands need a key)
+          jsonParse.process(pCmd, pData);
+        }
+      }
+      break;
+  }
 }
 
 void setup()
@@ -480,10 +447,17 @@ void setup()
   // attach AsyncEventSource
   events.onConnect(onEvents);
   server.addHandler(&events);
+  // attach AsyncWebSocket
+  ws.onEvent(onWsEvent);
+  server.addHandler(&ws);
 
   server.on ( "/", HTTP_GET | HTTP_POST, handleRoot );
   server.on ( "/s", HTTP_GET | HTTP_POST, handleS );
   server.on ( "/json", HTTP_GET | HTTP_POST, handleJson );
+  // respond to GET requests on URL /heap
+  server.on("/heap", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(200, "text/plain", String(ESP.getFreeHeap()));
+  });
 
   server.onNotFound(onRequest);
   server.onFileUpload(onUpload);
@@ -492,6 +466,8 @@ void setup()
   server.begin();
 
   MDNS.addService("http", "tcp", serverPort);
+
+  jsonParse.addList(jsonList1);
 
   dht.setup(DHT_22, DHT::DHT22);
   getUdpTime();
@@ -522,6 +498,7 @@ void loop()
         bDoorOpen = bNew;
         doorOpenTimer = bDoorOpen ? ee.alarmTimeout : 0;
         events.send(dataJson().c_str(), "state");
+        ws.printfAll("state;%s", dataJson().c_str());
     }
 
     rangeMedian[0].getMedian(carVal);
@@ -531,6 +508,7 @@ void loop()
     {
       bCarIn = bNew;
       events.send(dataJson().c_str(), "state" );
+      ws.printfAll("state;%s", dataJson().c_str());
     }
 
     if (hour_save != hour())
@@ -554,6 +532,7 @@ void loop()
         temp = newtemp;
         rh = newrh;
         events.send(dataJson().c_str(), "state" );
+        ws.printfAll("state;%s", dataJson().c_str());
       }
     }
     if(nWrongPass)
@@ -579,8 +558,9 @@ void loop()
     digitalWrite(TRIG, HIGH); // pulse the ultrasonic rangefinder
     delayMicroseconds(10);
     digitalWrite(TRIG, LOW);
-    rangeMedian[0].add( (uint16_t)((pulseIn(ECHO, HIGH) / 2) / 29.1) );
-  
+    uint16_t cv = (uint16_t)((pulseIn(ECHO, HIGH) / 2) / 29.1);
+    rangeMedian[0].add( cv );
+
     digitalWrite(ESP_LED, LOW);
     delay(20);
     digitalWrite(ESP_LED, HIGH);
@@ -594,11 +574,10 @@ void loop()
 void DrawScreen()
 {
   // draw the screen here
-  display.clear();
-
   const char days[7][4] = {"Sun","Mon","Tue","Wed","Thr","Fri","Sat"};
   const char months[12][4] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
 
+  display.clear();
   if(ee.bEnableOLED)
   {
     String s = timeFmt(true, true);
@@ -615,9 +594,8 @@ void DrawScreen()
     display.drawPropString( 2, 23, bDoorOpen ? "Open":"Closed" );
     display.drawPropString(80, 23, bCarIn ? "In":"Out" );
 
-    display.drawPropString(2, 47, String(adjTemp(), 1) + "]");
-    display.drawPropString(64, 47, String(adjRh(), 1) + "%");
-
+    display.drawPropString(2, 47, String(temp + ((float)ee.tempCal/10), 1) + "]");
+    display.drawPropString(64, 47, String(rh, 1) + "%");
   }
   display.display();
 }
