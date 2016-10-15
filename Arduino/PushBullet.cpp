@@ -31,7 +31,7 @@ bool PushBullet::send(const char *pTitle, String sBody, const char *pToken)
   if(m_ac.connected())
     m_ac.stop();
 
-  return m_ac.connect( host, 443, true);
+  return m_ac.connect( host, 443, true);// set ASYNC_TCP_SSL_ENABLED to 1 in ESPAsyncTCP/src/async_config.h
 }
   
 void PushBullet::_onDisconnect(AsyncClient* client)
