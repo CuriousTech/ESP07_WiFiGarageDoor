@@ -96,17 +96,18 @@ void WiFiManager::startWebConfig(String ssid) {
 
     uint8_t s;
     uint8_t m = minute();
- 
+
     _timeout = true;
     while(serverLoop() == WM_WAIT) {      //looping
-      if(s != second()) // pulse LED
+      if(s != second())
       {
         s = second();
         digitalWrite(2, !digitalRead(2)); // Toggle blue LED
       }
+
       if(_timeout)
       {
-        if(m != minute() )
+        if(m != minute())
         {
           m = minute();
           int n = WiFi.scanNetworks();
@@ -150,7 +151,7 @@ int WiFiManager::serverLoop()
     }
 
     DEBUG_PRINT("New client");
-
+    
     // Wait for data from client to become available
     while(client.connected() && !client.available()){
         delay(1);
@@ -210,9 +211,11 @@ int WiFiManager::serverLoop()
     else if ( req.startsWith("/s") ) {
         String s1 = urldecode(req.substring(8,req.indexOf('&')).c_str());
         s1.toCharArray(ee.szSSID, sizeof(ee.szSSID) );
+        DEBUG_PRINT(ee.szSSID);
         req = req.substring( req.indexOf('&') + 1);
         s1 = urldecode(req.substring(req.lastIndexOf('=')+1).c_str());
         s1.toCharArray(ee.szSSIDPassword, sizeof(ee.szSSIDPassword) );
+        Serial.println(ee.szSSIDPassword);
         eemem.update();
 
         s = HTTP_200;
@@ -298,8 +301,7 @@ boolean WiFiManager::findOpenAP(const char *szUrl)
         {
             Serial.print(WiFi.SSID(i));
             Serial.print(" ");
-            Serial.println(WiFi.encryptionType(i));
-            display.print(WiFi.SSID(i));
+
             if(WiFi.encryptionType(i) == 7 /*&& strncmp(WiFi.SSID(i),"Chromecast",6) != 0*/)
             {
               display.drawString(128-8, 56, "O");
@@ -308,8 +310,11 @@ boolean WiFiManager::findOpenAP(const char *szUrl)
             else if( _ssid == WiFi.SSID(i) ){ // The saved AP was found
               bFound  = true;
               display.drawString(128-8, 56, "<");
-              Serial.println(" Cfg AP found");
+              Serial.print("(Cfg) ");
             }
+
+            Serial.println(WiFi.encryptionType(i));
+            display.print(WiFi.SSID(i));
         }
   }
 
@@ -341,7 +346,7 @@ boolean WiFiManager::findOpenAP(const char *szUrl)
         Serial.print(WiFi.SSID(i));
         display.print(String(WiFi.SSID(i)) + "...");
         char szSSID[64];
-        WiFi.SSID(i).toCharArray(szSSID, 64);
+        WiFi.SSID(i).toCharArray(szSSID, 64); // fix for 2.0.0
         WiFi.begin(szSSID);
         for(int n = 0; n < 50 && WiFi.status() != WL_CONNECTED; n++)
         {
@@ -375,8 +380,8 @@ boolean WiFiManager::findOpenAP(const char *szUrl)
     if (WiFi.status() != WL_CONNECTED)
     {
       Serial.println("Open WiFi failed");
-      display.print("Open WiFi failed");
       Serial.println("Switch to SoftAP");
+      display.print("Open WiFi failed");
       display.print("Switch to SoftAP");
       autoConnect("ESP8266");
     }
