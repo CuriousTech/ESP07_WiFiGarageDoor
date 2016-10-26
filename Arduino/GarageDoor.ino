@@ -72,7 +72,6 @@ uint8_t  dst;           // current dst
 DHT dht;
 float temp;
 float rh;
-int httpPort = 80; // may be modified by open AP scan
 
 eeMem eemem;
 
@@ -96,16 +95,30 @@ String dataJson()
   s += String(temp + ((float)ee.tempCal/10), 1);
   s += "\",\"rh\":\"";
   s += String(rh, 1);
-  s += "\", \"at\":";
-  s += ee.alarmTimeout;
-  s += ", \"ct\":";
-  s += ee.closeTimeout;
-  s += ", \"dc\":";
-  s += ee.delayClose;
-  s += ", \"tz\":";
-  s += ee.tz;
-  s += ", \"o\":";
+  s += "\",\"o\":";
   s += ee.bEnableOLED;
+  s += ",\"carVal\": ";
+  s += carVal;         // use value to check for what your threshold should be
+  s += ",\"doorVal\": ";
+  s += doorVal;
+  s += "}";
+  return s;
+}
+
+String settingsJson()
+{
+  String s = "{\"ct\":";
+  s += ee.nCarThresh;
+  s += ",\"dt\":";
+  s += ee.nDoorThresh;
+  s += ",\"tz\":";
+  s += ee.tz;
+  s += ",\"at\":";
+  s += ee.alarmTimeout;
+  s += ",\"clt\":";
+  s += ee.closeTimeout;
+  s += ",\"delay\":";
+  s += ee.delayClose;
   s += "}";
   return s;
 }
@@ -174,16 +187,6 @@ void parseParams(AsyncWebServerRequest *request)
       case 'T': // alarm timeout
           ee.alarmTimeout = val;
           break;
-      case 'L':  // Thresholds, Ex set car=290, door=500 : hTtp://192.168.0.190:84?LC=290&LD=500&key=password
-           if(which) // LD
-           {
-             ee.nDoorThresh = val;
-           }
-           else // LC
-           {
-             ee.nCarThresh = val;
-           }
-           break;
       case 'F': // temp offset
           ee.tempCal = val;
           break;
@@ -199,10 +202,6 @@ void parseParams(AsyncWebServerRequest *request)
       case 'p': // pushbullet
           s.toCharArray( ee.pbToken, sizeof(ee.pbToken) );
           break;
-      case 'Z': // TZ
-          ee.tz = val;
-          getUdpTime();
-          break;
     }
   }
 }
@@ -215,26 +214,6 @@ void onUpload(AsyncWebServerRequest *request, String filename, size_t index, uin
   //Handle upload
 }
 
-void handleRoot(AsyncWebServerRequest *request) // Main webpage interface
-{
-//  Serial.println("handleRoot");
-
-  parseParams(request);
-  request->send_P( 200, "text/html", page1 );
-}
-/*
-float adjTemp()
-{
-  int t = (temp * 10) + ee.tempCal;
-  return ((float)t / 10);
-}
-
-float adjRh()
-{
-  int t = (rh * 10);
-  return ((float)t / 10);
-}
-*/
 // Time in hh:mm[:ss][AM/PM]
 String timeFmt(bool do_sec, bool do_M)
 {
@@ -258,50 +237,6 @@ String timeFmt(bool do_sec, bool do_M)
   return r;
 }
 
-void handleS(AsyncWebServerRequest *request)
-{
-    parseParams(request);
-
-    String page = "{\"ip\": \"";
-    page += WiFi.localIP().toString();
-    page += ":";
-    page += serverPort;
-    page += "\"}";
-    request->send( 200, "text/json", page );
-}
-
-// JSON format for initial or full data read
-void handleJson(AsyncWebServerRequest *request)
-{
-  parseParams(request);
-
-  String page = "{\"carThresh\": ";
-  page += ee.nCarThresh;
-  page += ", \"doorThresh\": ";
-  page += ee.nDoorThresh;
-  page += ", \"carVal\": ";
-  page += carVal;         // use value to check for what your threshold should be
-  page += ", \"doorVal\": ";
-  page += doorVal;
-  page += ", \"doorOpen\": ";
-  page += bDoorOpen;
-  page += ", \"carIn\": ";
-  page += bCarIn;
-  page += ", \"alarmTimeout\": ";
-  page += ee.alarmTimeout;
-  page += ", \"closeTimeout\": ";
-  page += ee.closeTimeout;
-  page += ", \"delay\": ";
-  page += ee.delayClose;
-  page += ",\"temp\": \"";
-  page += String(temp + ((float)ee.tempCal/10), 1);
-  page += "\",\"rh\": \"";
-  page += String(rh, 1);
-  page += "\"}";
-
-  request->send( 200, "text/json", page );
-}
-
 void onRequest(AsyncWebServerRequest *request){
   //Handle Unknown Request
   request->send(404);
@@ -309,6 +244,7 @@ void onRequest(AsyncWebServerRequest *request){
 
 void onEvents(AsyncEventSourceClient *client)
 {
+  client->send(":ok", NULL, millis(), 1000);
   static bool rebooted = true;
   if(rebooted)
   {
@@ -333,10 +269,12 @@ const char *jsonList1[] = { "cmd",
 };
 
 bool bKeyGood;
+bool dataMode;
 
 void jsonCallback(int16_t iEvent, uint16_t iName, int iValue, char *psValue)
 {
   if(bKeyGood == false && iName) return;  // only allow key set
+
   switch(iEvent)
   {
     case 0: // cmd
@@ -385,6 +323,7 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
   {
     case WS_EVT_CONNECT:      //client connected
       client->printf("state;%s", dataJson().c_str());
+      client->printf("settings;%s", settingsJson().c_str());
       client->ping();
       break;
     case WS_EVT_DISCONNECT:    //client disconnected
@@ -402,6 +341,8 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
 
           char *pCmd = strtok((char *)data, ";"); // assume format is "name;{json:x}"
           char *pData = strtok(NULL, "");
+
+          if(pCmd == NULL || pData == NULL) break;
 
           bKeyGood = false; // for callback (all commands need a key)
           jsonParse.process(pCmd, pData);
@@ -451,10 +392,30 @@ void setup()
   ws.onEvent(onWsEvent);
   server.addHandler(&ws);
 
-  server.on ( "/", HTTP_GET | HTTP_POST, handleRoot );
-  server.on ( "/s", HTTP_GET | HTTP_POST, handleS );
-  server.on ( "/json", HTTP_GET | HTTP_POST, handleJson );
-  // respond to GET requests on URL /heap
+  server.on( "/", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request){
+    parseParams(request);
+    dataMode = false;
+    request->send_P( 200, "text/html", page1 );
+  });
+  server.on( "/setup", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request){
+    parseParams(request);
+    dataMode = true;
+    request->send_P( 200, "text/html", page2 );
+  });
+  server.on( "/s", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request){
+    parseParams(request);
+
+    String page = "{\"ip\": \"";
+    page += WiFi.localIP().toString();
+    page += ":";
+    page += serverPort;
+    page += "\"}";
+    request->send( 200, "text/json", page );
+  });
+  server.on( "/json", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request){
+    parseParams(request);
+    request->send( 200, "text/json", settingsJson() );
+  });
   server.on("/heap", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/plain", String(ESP.getFreeHeap()));
   });
@@ -473,10 +434,20 @@ void setup()
   getUdpTime();
 }
 
+int stateTimer = 60;
+
+void sendState()
+{
+  events.send(dataJson().c_str(), "state");
+  ws.printfAll("state;%s", dataJson().c_str());
+  stateTimer = 60;
+}
+
 void loop()
 {
   static uint8_t hour_save, sec_save;
   static uint8_t cnt = 0;
+  static uint16_t oldCarVal, oldDoorVal;
 #define ANA_AVG 24
   bool bNew;
 
@@ -497,18 +468,23 @@ void loop()
     {
         bDoorOpen = bNew;
         doorOpenTimer = bDoorOpen ? ee.alarmTimeout : 0;
-        events.send(dataJson().c_str(), "state");
-        ws.printfAll("state;%s", dataJson().c_str());
+        sendState();
     }
 
     rangeMedian[0].getMedian(carVal);
     bNew = (carVal < ee.nCarThresh) ? true:false; // lower is closer
 
+    if(dataMode && (carVal != oldCarVal || doorVal != oldDoorVal) )
+    {
+      oldCarVal = carVal;
+      oldDoorVal = doorVal;
+      ws.printfAll("state;%s", dataJson().c_str());
+    }
+
     if(bNew != bCarIn)
     {
       bCarIn = bNew;
-      events.send(dataJson().c_str(), "state" );
-      ws.printfAll("state;%s", dataJson().c_str());
+      sendState();
     }
 
     if (hour_save != hour())
@@ -531,8 +507,7 @@ void loop()
       {
         temp = newtemp;
         rh = newrh;
-        events.send(dataJson().c_str(), "state" );
-        ws.printfAll("state;%s", dataJson().c_str());
+        sendState();
       }
     }
     if(nWrongPass)
@@ -554,6 +529,9 @@ void loop()
         pb.send("GDO", "Door not closed", ee.pbToken);
       }
     }
+
+    if(--stateTimer == 0) // a 60 second keepAlive
+      sendState();
 
     digitalWrite(TRIG, HIGH); // pulse the ultrasonic rangefinder
     delayMicroseconds(10);
