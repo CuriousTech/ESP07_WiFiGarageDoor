@@ -11,6 +11,7 @@ eeSet ee = { sizeof(eeSet), 0xAAAA,
   0,         // adjust for error
   true,    // OLED
   10, // delayClose
+  60,
   {0},
   "pushbullet token", // pushbullet token
 };
