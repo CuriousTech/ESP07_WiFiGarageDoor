@@ -18,7 +18,8 @@ struct eeSet // EEPROM backed data
   int8_t   tempCal;
   bool     bEnableOLED;
   uint16_t delayClose;
-  uint16_t res1[8];
+  uint16_t rate;
+  uint16_t res1[7];
   char     pbToken[40];
 };
 
