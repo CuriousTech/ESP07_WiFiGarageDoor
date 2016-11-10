@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>WiFi Garage Door Opener</title>
+<style type="text/css">
+div,table,input{
+border-radius: 5px;
+margin-bottom: 5px;
+box-shadow: 2px 2px 12px #000000;
+background-image: -moz-linear-gradient(top, #ffffff, #50a0ff);
+background-image: -ms-linear-gradient(top, #ffffff, #50a0ff);
+background-image: -o-linear-gradient(top, #ffffff, #50a0ff);
+background-image: -webkit-linear-gradient(top, #efffff, #50a0ff);
+background-image: linear-gradient(top, #ffffff, #50a0ff);
+background-clip: padding-box;
+}
+body{width:230px;font-family: Arial, Helvetica, sans-serif;}
+.style5 {
+border-radius: 5px;
+box-shadow: 0px 0px 15px #000000;
+background-image: -moz-linear-gradient(top, #ff00ff, #ffa0ff);
+background-image: -ms-linear-gradient(top, #ff00ff, #ffa0ff);
+background-image: -o-linear-gradient(top, #ff00ff, #ffa0ff);
+background-image: -webkit-linear-gradient(top, #ff0000, #ffa0a0);
+background-image: linear-gradient(top, #ff00ff, #ffa0ff);
+}
+</style>
+<script type="text/javascript">
+a=document.all
+oledon=0
+key=localStorage.getItem('key')
+function startWS(){
+ws = new WebSocket("ws://"+window.location.host+"/ws")
+ws.onopen = function(evt) { }
+ws.onclose = function(evt) { alert("Connection closed."); }
+ws.onmessage = function(evt) {
+ lines = evt.data.split(';')
+ event=lines[0]
+ data=lines[1]
+ if(event == 'settings')
+ {
+ d=JSON.parse(data)
+ a.dc.value=d.delay
+ }
+ if(event == 'state')
+ {
+ d=JSON.parse(data)
+ dt=new Date(d.t*1000)
+ a.time.innerHTML=dt.toLocaleTimeString()
+ a.car.innerHTML=d.car?"IN":"OUT"
+ a.car.setAttribute('class',d.car?'':'style5')
+ a.door.innerHTML=d.door?"OPEN":"CLOSED"
+ a.door.setAttribute('class',d.door?'style5':'')
+ a.doorBtn.value=d.door?"Close":"Open"
+ a.temp.innerHTML=d.temp+"&degF"
+ a.rh.innerHTML=d.rh+"%"
+ oledon=d.o
+ a.OLED.value=oledon?'ON ':'OFF'
+ }
+ else if(event == 'alert')
+ {
+  alert(data)
+ }
+}
+}
+function setVar(varName, value)
+{
+ ws.send('cmd;{"key":"'+key+'","'+varName+'":'+value+'}')
+}
+function setDDelay()
+{
+ setVar('doorDelay', a.dc.value)
+}
+function oled(){
+oledon=!oledon
+setVar('oled', oledon)
+a.OLED.value=oledon?'ON ':'OFF'
+}
+</script>
+<body bgcolor="black" onload="{startWS()}">
+<div><h3>WiFi Garage Door Opener </h3>
+<table align=center width=200>
+<tr align=center><td><p id="time"> 0:00:00 AM</p></td><td><input type="button" value="Open" id="doorBtn" onClick="{setVar('door',0)}"></td></tr>
+<tr><td><input id='dc' type=text size=4 value='10'><input value="Set" type='button' onClick="{setDDelay()}"></td>
+<td align=center><input type="button" value="Delayed" id="doorBtn" onClick="{setVar('door',1)}"></td></tr>
+<tr align=center><td>Garage</td><td>Car</td></tr>
+<tr align=center><td><div id="door">CLOSED</div></td><td><div id="car">IN</div></td></tr>
+<tr align="center"><td><div id="temp">00.0&degF</div></td><td><div id="rh">00.0%</div></td></tr>
+<tr><td>Display: <input type="button" value="ON" id="OLED" onClick="{oled()}"></td><td><input type="submit" value="Setup" onClick="window.location='/setup.html';"></td></tr>
+</table>
+&nbsp
+</div>
+</body>
+</html>
