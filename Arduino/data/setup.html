@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>WiFi Garage Door Opener</title>
+<style type="text/css">
+div,table,input{
+border-radius: 5px;
+margin-bottom: 5px;
+box-shadow: 2px 2px 12px #000000;
+background-image: -moz-linear-gradient(top, #ffffff, #50a0ff);
+background-image: -ms-linear-gradient(top, #ffffff, #50a0ff);
+background-image: -o-linear-gradient(top, #ffffff, #50a0ff);
+background-image: -webkit-linear-gradient(top, #efffff, #50a0ff);
+background-image: linear-gradient(top, #ffffff, #50a0ff);
+background-clip: padding-box;
+}
+body{width:230px;font-family: Arial, Helvetica, sans-serif;}
+.style5 {
+border-radius: 5px;
+box-shadow: 0px 0px 15px #000000;
+background-image: -moz-linear-gradient(top, #ff00ff, #ffa0ff);
+background-image: -ms-linear-gradient(top, #ff00ff, #ffa0ff);
+background-image: -o-linear-gradient(top, #ff00ff, #ffa0ff);
+background-image: -webkit-linear-gradient(top, #ff0000, #ffa0a0);
+background-image: linear-gradient(top, #ff00ff, #ffa0ff);
+}
+</style>
+<script type="text/javascript">
+a=document.all
+oledon=0
+function startEvents(){
+ws = new WebSocket("ws://"+window.location.host+"/ws")
+ws.onopen = function(evt) { }
+ws.onclose = function(evt) { alert("Connection closed."); }
+ws.onmessage = function(evt) {
+ lines = evt.data.split(';')
+ event=lines[0]
+ data=lines[1]
+ if(event == 'settings')
+ {
+ d=JSON.parse(data)
+ a.tz.value=d.tz
+ a.thd.value=d.dt
+ a.thc.value=d.ct
+ a.at.value=d.at
+// a.clt.value=d.clt
+ a.dc.value=d.delay
+ }
+ if(event == 'state')
+ {
+ d=JSON.parse(data)
+ dt=new Date(d.t*1000)
+ a.time.innerHTML=dt.toLocaleTimeString()
+ a.car.innerHTML=d.car?"IN":"OUT"
+ a.car.setAttribute('class',d.car?'':'style5')
+ a.door.innerHTML=d.door?"OPEN":"CLOSED"
+ a.door.setAttribute('class',d.door?'style5':'')
+ a.doorBtn.value=d.door?"Close":"Open"
+ oledon=d.o
+ a.OLED.value=oledon?'ON ':'OFF'
+ a.dv.innerHTML=d.doorVal
+ a.cv.innerHTML=d.carVal
+ }
+ else if(event == 'alert')
+ {
+  alert(data)
+ }
+}
+}
+function setVar(varName, value)
+{
+ ws.send('cmd;{"key":"'+a.myKey.value+'","'+varName+'":'+value+'}')
+}
+function setDDelay()
+{
+ setVar('doorDelay', a.dc.value)
+}
+function setATimeout()
+{
+ setVar('alarmtimeout', a.at.value)
+}
+function setTZ()
+{
+ setVar('TZ', a.tz.value)
+}
+function setTh1()
+{
+ setVar('threshDoor', a.thd.value)
+}
+function setTh2()
+{
+ setVar('threshCar', a.thc.value)
+}
+function oled(){
+oledon=!oledon
+setVar('oled', oledon)
+a.OLED.value=oledon?'ON ':'OFF'
+}
+</script>
+<body bgcolor="black" onload="{
+key=localStorage.getItem('key')
+if(key!=null) document.getElementById('myKey').value=key
+startEvents()
+}">
+<div><h3>WiFi Garage Door Opener </h3>
+<table align=center>
+<tr align=center><td><p id="time"> 0:00:00 AM</p></td><td><input type="button" value="Open" id="doorBtn" onClick="{setVar('door',0)}"></td></tr>
+<tr><td><input id='dc' type=text size=4 value='10'><input value="Set" type='button' onClick="{setDDelay()}"></td>
+<td align=center><input type="button" value="Delayed" id="doorBtn" onClick="{setVar('door',1)}"></td></tr>
+<tr align=center><td>Garage</td><td>Car</td></tr>
+<tr align=center><td><div id="door">CLOSED</div></td><td><div id="car">IN</div></td></tr>
+<tr align=center><td><div id="dv"></div></td><td><div id="cv"></div></td></tr>
+<tr><td><input id='thd' type=text size=4 value='100'><input value="Set" type='button' onClick="{setTh1()}"></td>
+<td><input id='thc' type=text size=4 value='100'><input value="Set" type='button' onClick="{setTh2()}"></td></tr>
+<tr align=center><td>Timeout</td><td>Timezone</td></tr>
+<tr><td><input name='at' id='at' type=text size=4 value='60'><input value="Set" type='button' onclick="{setATimeout()}"></td>
+<td><input name='tz' id='tz' type=text size=4 value='-5'><input value="Set" type='button' onclick="{setTZ()}"></td></tr>
+<tr><td>Display:<input type="button" value="ON" id="OLED" onClick="{oled()}"></td><td align=right><input type="submit" value="Main" onClick="window.location='/';"></td></tr>
+</table>
+<input id="myKey" name="key" type=text size=50 placeholder="password" style="width: 150px"><input type="button" value="Save" onClick="{localStorage.setItem('key', key=document.all.myKey.value)}">
+</div>
+</body>
+</html>
