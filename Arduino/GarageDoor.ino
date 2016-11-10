@@ -22,6 +22,7 @@ SOFTWARE.
 */
 
 // Build with Arduino IDE 1.6.11, esp8266 SDK 2.3.0
+//#define USE_SPIFFS // Uses 7K more program space
 
 #include <Wire.h>
 #include <DHT.h> // http://www.github.com/markruys/arduino-DHT
@@ -33,11 +34,16 @@ SOFTWARE.
 #include <ESPAsyncWebServer.h> // https://github.com/me-no-dev/ESPAsyncWebServer
 #include "RunningMedian.h"
 #include <TimeLib.h> // http://www.pjrc.com/teensy/td_libs_Time.html
-// Note: remove "Time.h" from the TimeLib library and rename "Time.h" to "TimeLib.h" for any includes in it.
+#include <UdpTime.h>
 #include "PushBullet.h"
 #include "eeMem.h"
-#include <JsonClient.h>
+#include <JsonParse.h> // https://github.com/CuriousTech/ESP8266-HVAC/tree/master/Libraries/JsonParse
+#ifdef USE_SPIFFS
+#include <FS.h>
+#include <SPIFFSEditor.h>
+#else
 #include "pages.h"
+#endif
 
 const char controlPassword[] = "password"; // device password for modifying any settings
 int serverPort = 84;                    // port fwd for fwdip.php
@@ -61,13 +67,9 @@ AsyncWebSocket ws("/ws"); // access at ws://[esp ip]/ws
 PushBullet pb;
 
 void jsonCallback(int16_t iEvent, uint16_t iName, int iValue, char *psValue);
-JsonClient jsonParse(jsonCallback);
+JsonParse jsonParse(jsonCallback);
 
-const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
-byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
-WiFiUDP Udp;
-bool bNeedUpdate;
-uint8_t  dst;           // current dst
+UdpTime utime;
 
 DHT dht;
 float temp;
@@ -85,40 +87,28 @@ uint16_t doorDelay;
 String dataJson()
 {
   String s = "{";
-  s += "\"t\":";
-  s += now() - ((ee.tz + dst) * 3600);
-  s += ",\"door\":";
-  s += bDoorOpen;
-  s += ",\"car\":";
-  s += bCarIn;
-  s += ",\"temp\":\"";
-  s += String(temp + ((float)ee.tempCal/10), 1);
-  s += "\",\"rh\":\"";
-  s += String(rh, 1);
-  s += "\",\"o\":";
-  s += ee.bEnableOLED;
-  s += ",\"carVal\": ";
-  s += carVal;         // use value to check for what your threshold should be
-  s += ",\"doorVal\": ";
-  s += doorVal;
+  s += "\"t\":";      s += now() - ( (ee.tz + utime.getDST() ) * 3600);
+  s += ",\"door\":";  s += bDoorOpen;
+  s += ",\"car\":";   s += bCarIn;
+  s += ",\"temp\":\""; s += String(temp + ((float)ee.tempCal/10), 1);
+  s += "\",\"rh\":\""; s += String(rh, 1);
+  s += "\",\"o\":";    s += ee.bEnableOLED;
+  s += ",\"carVal\": "; s += carVal;         // use value to check for what your threshold should be
+  s += ",\"doorVal\": "; s += doorVal;
+  s += ",\"heap\": "; s += ESP.getFreeHeap();
   s += "}";
   return s;
 }
 
 String settingsJson()
 {
-  String s = "{\"ct\":";
-  s += ee.nCarThresh;
-  s += ",\"dt\":";
-  s += ee.nDoorThresh;
-  s += ",\"tz\":";
-  s += ee.tz;
-  s += ",\"at\":";
-  s += ee.alarmTimeout;
-  s += ",\"clt\":";
-  s += ee.closeTimeout;
-  s += ",\"delay\":";
-  s += ee.delayClose;
+  String s = "{";
+  s += "\"ct\":";  s += ee.nCarThresh;
+  s += ",\"dt\":";  s += ee.nDoorThresh;
+  s += ",\"tz\":";  s += ee.tz;
+  s += ",\"at\":";  s += ee.alarmTimeout;
+  s += ",\"clt\":";  s += ee.closeTimeout;
+  s += ",\"delay\":";  s += ee.delayClose;
   s += "}";
   return s;
 }
@@ -199,19 +189,20 @@ void parseParams(AsyncWebServerRequest *request)
           display.clear();
           display.display();
           break;
-      case 'p': // pushbullet
+      case 'r': // WS/event update rate
+          ee.rate = val;
+          break;
+      case 'b': // pushbullet
           s.toCharArray( ee.pbToken, sizeof(ee.pbToken) );
+          break;
+      case 's': // ssid
+          s.toCharArray(ee.szSSID, sizeof(ee.szSSID));
+          break;
+      case 'p': // pass
+          wifi.setPass(s.c_str());
           break;
     }
   }
-}
-
-void onBody(AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
-  //Handle body
-}
-
-void onUpload(AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
-  //Handle upload
 }
 
 // Time in hh:mm[:ss][AM/PM]
@@ -244,7 +235,7 @@ void onRequest(AsyncWebServerRequest *request){
 
 void onEvents(AsyncEventSourceClient *client)
 {
-  client->send(":ok", NULL, millis(), 1000);
+//  client->send(":ok", NULL, millis(), 1000);
   static bool rebooted = true;
   if(rebooted)
   {
@@ -319,9 +310,16 @@ void jsonCallback(int16_t iEvent, uint16_t iName, int iValue, char *psValue)
 
 void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventType type, void * arg, uint8_t *data, size_t len)
 {  //Handle WebSocket event
+  static bool bRestarted = true;
+
   switch(type)
   {
     case WS_EVT_CONNECT:      //client connected
+      if(bRestarted)
+      {
+        bRestarted = false;
+        client->printf("alert;restarted");
+      }
       client->printf("state;%s", dataJson().c_str());
       client->printf("settings;%s", settingsJson().c_str());
       client->ping();
@@ -376,14 +374,21 @@ void setup()
   WiFi.hostname("GDO");
   wifi.autoConnect("GDO");
 
-  Serial.println("");
-  Serial.println("WiFi connected");
-  Serial.println("IP address: ");
-  Serial.println(WiFi.localIP());
-
-  if ( MDNS.begin ( "gdo", WiFi.localIP() ) ) {
-    Serial.println ( "MDNS responder started" );
+  if(wifi.isCfg())
+  {
+    Serial.println("");
+    Serial.println("WiFi connected");
+    Serial.println("IP address: ");
+    Serial.println(WiFi.localIP());
+  
+    if ( MDNS.begin ( "gdo", WiFi.localIP() ) )
+      Serial.println ( "MDNS responder started" );
   }
+
+#ifdef USE_SPIFFS
+  SPIFFS.begin();
+  server.addHandler(new SPIFFSEditor("admin", controlPassword));
+#endif
 
   // attach AsyncEventSource
   events.onConnect(onEvents);
@@ -395,12 +400,25 @@ void setup()
   server.on( "/", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request){
     parseParams(request);
     dataMode = false;
-    request->send_P( 200, "text/html", page1 );
+    if(wifi.isCfg())
+      request->send( 200, "text/html", wifi.page() );
+    else
+    {
+#ifdef USE_SPIFFS
+      request->send(SPIFFS, "/index.html");
+#else
+      request->send_P(200, "text/html", page1);
+#endif
+    }
   });
-  server.on( "/setup", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request){
+  server.on( "/setup.html", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request){
     parseParams(request);
     dataMode = true;
-    request->send_P( 200, "text/html", page2 );
+#ifdef USE_SPIFFS
+    request->send(SPIFFS, "/setup.html");
+#else
+    request->send_P(200, "text/html", page2);
+#endif
   });
   server.on( "/s", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request){
     parseParams(request);
@@ -420,9 +438,14 @@ void setup()
     request->send(200, "text/plain", String(ESP.getFreeHeap()));
   });
 
-  server.onNotFound(onRequest);
-  server.onFileUpload(onUpload);
-  server.onRequestBody(onBody);
+  server.onNotFound([](AsyncWebServerRequest *request){
+    request->send(404);
+  });
+
+  server.onFileUpload([](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
+  });
+  server.onRequestBody([](AsyncWebServerRequest *request, uint8_t *data, size_t len, size_t index, size_t total){
+  });
 
   server.begin();
 
@@ -431,16 +454,18 @@ void setup()
   jsonParse.addList(jsonList1);
 
   dht.setup(DHT_22, DHT::DHT22);
-  getUdpTime();
+  if(!wifi.isCfg())
+    utime.start();
+  if(ee.rate == 0) ee.rate = 60;
 }
 
-int stateTimer = 60;
+uint16_t stateTimer = ee.rate;
 
 void sendState()
 {
   events.send(dataJson().c_str(), "state");
   ws.printfAll("state;%s", dataJson().c_str());
-  stateTimer = 60;
+  stateTimer = ee.rate;
 }
 
 void loop()
@@ -448,15 +473,13 @@ void loop()
   static uint8_t hour_save, sec_save;
   static uint8_t cnt = 0;
   static uint16_t oldCarVal, oldDoorVal;
-#define ANA_AVG 24
   bool bNew;
 
-  static RunningMedian<uint16_t,ANA_AVG> rangeMedian[2];
+  static RunningMedian<uint16_t, 20> rangeMedian[2];
 
   MDNS.update();
-
-  if(bNeedUpdate)
-    checkUdpTime();
+  if(!wifi.isCfg())
+    utime.check(ee.tz);
 
   if(sec_save != second()) // only do stuff once per second (loop is maybe 20-30 Hz)
   {
@@ -492,7 +515,7 @@ void loop()
       hour_save = hour();
       if(hour_save == 2)
       {
-        getUdpTime(); // update time daily at DST change
+        utime.start(); // update time daily at DST change
       }
       eemem.update(); // update EEPROM if needed while we're at it (give user time to make many adjustments)
     }
@@ -533,18 +556,23 @@ void loop()
     if(--stateTimer == 0) // a 60 second keepAlive
       sendState();
 
-    digitalWrite(TRIG, HIGH); // pulse the ultrasonic rangefinder
-    delayMicroseconds(10);
-    digitalWrite(TRIG, LOW);
-    uint16_t cv = (uint16_t)((pulseIn(ECHO, HIGH) / 2) / 29.1);
-    rangeMedian[0].add( cv );
-
     digitalWrite(ESP_LED, LOW);
     delay(20);
     digitalWrite(ESP_LED, HIGH);
   }
 
-  DrawScreen();
+  static int rangeTime;
+  if(millis() - rangeTime >= 100) {
+    rangeTime = millis();
+    digitalWrite(TRIG, HIGH); // pulse the ultrasonic rangefinder
+    delayMicroseconds(10);
+    digitalWrite(TRIG, LOW);
+    uint16_t cv = (uint16_t)((pulseIn(ECHO, HIGH) / 2) / 29.1);
+    rangeMedian[0].add( cv );
+  }
+
+  if(!wifi.isCfg())
+    DrawScreen();
 
   rangeMedian[1].add( analogRead(A0) ); // read current IR sensor value
 }
@@ -552,19 +580,16 @@ void loop()
 void DrawScreen()
 {
   // draw the screen here
-  const char days[7][4] = {"Sun","Mon","Tue","Wed","Thr","Fri","Sat"};
-  const char months[12][4] = {"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
-
   display.clear();
   if(ee.bEnableOLED)
   {
     String s = timeFmt(true, true);
     s += "  ";
-    s += days[weekday()-1];
+    s += dayShortStr(weekday());
     s += " ";
     s += String(day());
     s += " ";
-    s += months[month()-1];
+    s += monthShortStr(month());
     s += "  ";
 
     Scroller(s);
@@ -615,111 +640,4 @@ void pulseRemote()
   digitalWrite(REMOTE, HIGH);
   delay(1000);
   digitalWrite(REMOTE, LOW);
-}
-
-void getUdpTime()
-{
-  if(bNeedUpdate) return;
-//  Serial.println("getUdpTime");
-  Udp.begin(2390);
-  // set all bytes in the buffer to 0
-  memset(packetBuffer, 0, NTP_PACKET_SIZE);
-  // Initialize values needed to form NTP request
-  // (see URL above for details on the packets)
-  packetBuffer[0] = 0b11100011;   // LI, Version, Mode
-  packetBuffer[1] = 0;     // Stratum, or type of clock
-  packetBuffer[2] = 6;     // Polling Interval
-  packetBuffer[3] = 0xEC;  // Peer Clock Precision
-  // 8 bytes of zero for Root Delay & Root Dispersion
-  packetBuffer[12]  = 49;
-  packetBuffer[13]  = 0x4E;
-  packetBuffer[14]  = 49;
-  packetBuffer[15]  = 52;
-  
-  // all NTP fields have been given values, now
-  // you can send a packet requesting a timestamp:
-  // time.nist.gov
-  Udp.beginPacket("0.us.pool.ntp.org", 123); //NTP requests are to port 123
-  Udp.write(packetBuffer, NTP_PACKET_SIZE);
-  Udp.endPacket();
-  bNeedUpdate = true;
-}
-
-void DST() // 2016 starts 2AM Mar 13, ends Nov 6
-{
-  tmElements_t tm;
-  breakTime(now(), tm);
-  // save current time
-  uint8_t m = tm.Month;
-  int8_t d = tm.Day;
-  int8_t dow = tm.Wday;
-
-  tm.Month = 3; // set month = Mar
-  tm.Day = 14; // day of month = 14
-  breakTime(makeTime(tm), tm); // convert to get weekday
-
-  uint8_t day_of_mar = (7 - tm.Wday) + 8; // DST = 2nd Sunday
-
-  tm.Month = 11; // set month = Nov (0-11)
-  tm.Day = 7; // day of month = 7 (1-30)
-  breakTime(makeTime(tm), tm); // convert to get weekday
-
-  uint8_t day_of_nov = (7 - tm.Wday) + 1;
-
-  if ((m  >  3 && m < 11 ) ||
-      (m ==  3 && d > day_of_mar) ||
-      (m ==  3 && d == day_of_mar && hour() >= 2) ||  // DST starts 2nd Sunday of March;  2am
-      (m == 11 && d <  day_of_nov) ||
-      (m == 11 && d == day_of_nov && hour() < 2))   // DST ends 1st Sunday of November; 2am
-   dst = 1;
- else
-   dst = 0;
-}
-
-bool checkUdpTime()
-{
-  static int retry = 0;
-
-  if(!Udp.parsePacket())
-  {
-    if(++retry > 500)
-     {
-        bNeedUpdate = false;
-        getUdpTime();
-        retry = 0;
-     }
-    return false;
-  }
-//  Serial.println("checkUdpTime good");
-
-  // We've received a packet, read the data from it
-  Udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
-
-  Udp.stop();
-  // the timestamp starts at byte 40 of the received packet and is four bytes,
-  // or two words, long. First, extract the two words:
-
-  unsigned long highWord = word(packetBuffer[40], packetBuffer[41]);
-  unsigned long lowWord = word(packetBuffer[42], packetBuffer[43]);
-  unsigned long secsSince1900 = highWord << 16 | lowWord;
-  // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
-  const unsigned long seventyYears = 2208988800UL;
-  long timeZoneOffset = 3600 * (ee.tz + dst);
-  unsigned long epoch = secsSince1900 - seventyYears + timeZoneOffset + 1; // bump 1 second
-
-  // Grab the fraction
-  highWord = word(packetBuffer[44], packetBuffer[45]);
-  lowWord = word(packetBuffer[46], packetBuffer[47]);
-  unsigned long d = (highWord << 16 | lowWord) / 4295000; // convert to ms
-  delay(d); // delay to next second (meh)
-  setTime(epoch);
-  DST(); // check the DST and reset clock
-  timeZoneOffset = 3600 * (ee.tz + dst);
-  epoch = secsSince1900 - seventyYears + timeZoneOffset + 1; // bump 1 second
-  setTime(epoch);
-
-//  Serial.print("Time ");
-//  Serial.println(timeFmt(true, true));
-  bNeedUpdate = false;
-  return true;
 }
