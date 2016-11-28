@@ -83,6 +83,7 @@ uint16_t doorVal;
 uint16_t carVal;
 uint16_t doorOpenTimer;
 uint16_t doorDelay;
+uint16_t displayTimer;
 
 String dataJson()
 {
@@ -181,6 +182,7 @@ void parseParams(AsyncWebServerRequest *request)
           ee.tempCal = val;
           break;
       case 'D': // Door (pulse the output)
+          displayTimer = 30;
           if(val) doorDelay = ee.delayClose;
           else pulseRemote();
           break;
@@ -260,7 +262,7 @@ const char *jsonList1[] = { "cmd",
 };
 
 bool bKeyGood;
-bool dataMode;
+bool bDataMode;
 
 void jsonCallback(int16_t iEvent, uint16_t iName, int iValue, char *psValue)
 {
@@ -291,6 +293,7 @@ void jsonCallback(int16_t iEvent, uint16_t iName, int iValue, char *psValue)
           ee.nCarThresh = iValue;
           break;
         case 6: // Door
+          displayTimer = 30;
           if(iValue) doorDelay = ee.delayClose;
           else pulseRemote();
           break;
@@ -325,6 +328,7 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
       client->ping();
       break;
     case WS_EVT_DISCONNECT:    //client disconnected
+      bDataMode = false; // turn off numeric display
       break;
     case WS_EVT_ERROR:    //error was received from the other end
       break;
@@ -399,7 +403,7 @@ void setup()
 
   server.on( "/", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request){
     parseParams(request);
-    dataMode = false;
+//    bDataMode = false;
     if(wifi.isCfg())
       request->send( 200, "text/html", wifi.page() );
     else
@@ -413,7 +417,7 @@ void setup()
   });
   server.on( "/setup.html", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request){
     parseParams(request);
-    dataMode = true;
+    bDataMode = true;
 #ifdef USE_SPIFFS
     request->send(SPIFFS, "/setup.html");
 #else
@@ -475,7 +479,7 @@ void loop()
   static uint16_t oldCarVal, oldDoorVal;
   bool bNew;
 
-  static RunningMedian<uint16_t, 20> rangeMedian[2];
+  static RunningMedian<uint16_t, 16> rangeMedian[2];
 
   MDNS.update();
   if(!wifi.isCfg())
@@ -484,11 +488,11 @@ void loop()
   if(sec_save != second()) // only do stuff once per second (loop is maybe 20-30 Hz)
   {
     sec_save = second();
-
     rangeMedian[1].getMedian(doorVal);
     bNew = (doorVal > ee.nDoorThresh) ? true:false;
     if(bNew != bDoorOpen)
     {
+        displayTimer = 60; // make the OLED turn on
         bDoorOpen = bNew;
         doorOpenTimer = bDoorOpen ? ee.alarmTimeout : 0;
         sendState();
@@ -497,7 +501,10 @@ void loop()
     rangeMedian[0].getMedian(carVal);
     bNew = (carVal < ee.nCarThresh) ? true:false; // lower is closer
 
-    if(dataMode && (carVal != oldCarVal || doorVal != oldDoorVal) )
+    if(carVal < 25) // something is < 25cm away
+      displayTimer = 60; // make the OLED turn on
+
+    if(bDataMode && (carVal != oldCarVal || doorVal != oldDoorVal) )
     {
       oldCarVal = carVal;
       oldDoorVal = doorVal;
@@ -556,6 +563,9 @@ void loop()
     if(--stateTimer == 0) // a 60 second keepAlive
       sendState();
 
+    if(displayTimer) // temp display on thing
+      displayTimer--;
+
     digitalWrite(ESP_LED, LOW);
     delay(20);
     digitalWrite(ESP_LED, HIGH);
@@ -567,8 +577,12 @@ void loop()
     digitalWrite(TRIG, HIGH); // pulse the ultrasonic rangefinder
     delayMicroseconds(10);
     digitalWrite(TRIG, LOW);
-    uint16_t cv = (uint16_t)((pulseIn(ECHO, HIGH) / 2) / 29.1);
+    uint16_t cv = (uint16_t)((pulseIn(ECHO, HIGH) / 2) / 29.1); // cm
     rangeMedian[0].add( cv );
+//    Serial.println( cv );
+//    uint16_t carVal;
+//    rangeMedian[0].getMedian(carVal);
+//    Serial.println( carVal);
   }
 
   if(!wifi.isCfg())
@@ -581,7 +595,7 @@ void DrawScreen()
 {
   // draw the screen here
   display.clear();
-  if(ee.bEnableOLED)
+  if(ee.bEnableOLED || displayTimer || bDataMode)
   {
     String s = timeFmt(true, true);
     s += "  ";
@@ -594,9 +608,16 @@ void DrawScreen()
 
     Scroller(s);
 
-    display.drawPropString( 2, 23, bDoorOpen ? "Open":"Closed" );
-    display.drawPropString(80, 23, bCarIn ? "In":"Out" );
-
+    if(bDataMode) // display numbers when the setup page is loaded
+    {
+      display.drawPropString( 2, 23, String(doorVal) );
+      display.drawPropString(80, 23, String(carVal) );
+    }
+    else  // normal status
+    {
+      display.drawPropString( 2, 23, bDoorOpen ? "Open":"Closed" );
+      display.drawPropString(80, 23, bCarIn ? "In":"Out" );
+    }
     display.drawPropString(2, 47, String(temp + ((float)ee.tempCal/10), 1) + "]");
     display.drawPropString(64, 47, String(rh, 1) + "%");
   }
