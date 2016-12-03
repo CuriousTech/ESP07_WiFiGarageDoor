@@ -79,6 +79,7 @@ eeMem eemem;
 
 bool bDoorOpen;
 bool bCarIn;
+bool bPulseRemote;
 uint16_t doorVal;
 uint16_t carVal;
 uint16_t doorOpenTimer;
@@ -184,7 +185,7 @@ void parseParams(AsyncWebServerRequest *request)
       case 'D': // Door (pulse the output)
           displayTimer = 30;
           if(val) doorDelay = ee.delayClose;
-          else pulseRemote();
+          else bPulseRemote = true;
           break;
       case 'O': // OLED
           ee.bEnableOLED = (s == "true") ? true:false;
@@ -295,7 +296,7 @@ void jsonCallback(int16_t iEvent, uint16_t iName, int iValue, char *psValue)
         case 6: // Door
           displayTimer = 30;
           if(iValue) doorDelay = ee.delayClose;
-          else pulseRemote();
+          else bPulseRemote = true; // start output pulse
           break;
         case 7: // tempOffset
           ee.tempCal = iValue;
@@ -478,6 +479,7 @@ void loop()
   static uint8_t cnt = 0;
   static uint16_t oldCarVal, oldDoorVal;
   bool bNew;
+  static bool bReleaseRemote;
 
   static RunningMedian<uint16_t, 16> rangeMedian[2];
 
@@ -489,7 +491,10 @@ void loop()
   {
     sec_save = second();
     rangeMedian[1].getMedian(doorVal);
-    bNew = (doorVal > ee.nDoorThresh) ? true:false;
+
+    doorVal = 60.374 * pow( map(doorVal, 0, 1024, 0, 2700)/1000.0, -1.16); // convert to CM (https://github.com/guillaume-rico/SharpIR)
+    
+    bNew = (doorVal < ee.nDoorThresh) ? true:false;
     if(bNew != bDoorOpen)
     {
         displayTimer = 60; // make the OLED turn on
@@ -514,6 +519,8 @@ void loop()
     if(bNew != bCarIn)
     {
       bCarIn = bNew;
+      if(bCarIn)
+        displayTimer = 60; // car just pulled in
       sendState();
     }
 
@@ -543,12 +550,27 @@ void loop()
     if(nWrongPass)
       nWrongPass--;
 
+    if(bReleaseRemote) // reset remote output 1 second after it started
+    {
+      digitalWrite(REMOTE, LOW);
+      bReleaseRemote = false;
+    }
+    if(bPulseRemote)
+    {
+      if(bDoorOpen == false) // closing door
+      {
+         doorOpenTimer = ee.closeTimeout; // set the short timeout
+      }
+      Serial.println("pulseRemote");
+      digitalWrite(REMOTE, HIGH);
+      bPulseRemote = false;
+      bReleaseRemote = true;
+    }
+
     if(doorDelay) // delayed close/open
     {
       if(--doorDelay == 0)
-      {
-        pulseRemote();
-      }
+        bPulseRemote = true;
     }
 
     if(doorOpenTimer && doorDelay == 0) // door open watchdog
@@ -611,7 +633,7 @@ void DrawScreen()
     if(bDataMode) // display numbers when the setup page is loaded
     {
       display.drawPropString( 2, 23, String(doorVal) );
-      display.drawPropString(80, 23, String(carVal) );
+      display.drawPropString(80, 23, String(carVal) ); // cm
     }
     else  // normal status
     {
@@ -649,16 +671,4 @@ void Scroller(String s)
     if(++ind >= len) // reset at last char
       ind = 0;
   }
-}
-
-void pulseRemote()
-{
-  if(bDoorOpen == false) // closing door
-  {
-    doorOpenTimer = ee.closeTimeout; // set the short timeout 
-  }
-//  Serial.println("pulseRemote");
-  digitalWrite(REMOTE, HIGH);
-  delay(1000);
-  digitalWrite(REMOTE, LOW);
 }
