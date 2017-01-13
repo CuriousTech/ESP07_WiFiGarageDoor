@@ -55,6 +55,7 @@ int serverPort = 84;                    // port fwd for fwdip.php
 #define REMOTE    15
 
 uint32_t lastIP;
+uint32_t verifiedIP;
 int nWrongPass;
 
 SSD1306 display(0x3c, 5, 4); // Initialize the oled display for address 0x3c, sda=5, sdc=4
@@ -141,7 +142,8 @@ void parseParams(AsyncWebServerRequest *request)
 
   uint32_t ip = request->client()->remoteIP();
 
-  if(strcmp(password, controlPassword))
+  if( ip && ip == verifiedIP ); // can skip if last verified
+  else if( strcmp(password, controlPassword))
   {
     if(nWrongPass == 0) // it takes at least 10 seconds to recognize a wrong password
       nWrongPass = 10;
@@ -159,6 +161,7 @@ void parseParams(AsyncWebServerRequest *request)
     return;
   }
 
+  verifiedIP = ip;
   lastIP = ip;
 
   for ( uint8_t i = 0; i < request->params(); i++ ) {
@@ -231,9 +234,17 @@ String timeFmt(bool do_sec, bool do_M)
   return r;
 }
 
-void onRequest(AsyncWebServerRequest *request){
-  //Handle Unknown Request
-  request->send(404);
+void handleS(AsyncWebServerRequest *request)
+{
+  parseParams(request);
+
+  String page = "{\"ip\": \"";
+  page += WiFi.localIP().toString();
+  page += ":";
+  page += serverPort;
+  page += "\"}";
+  request->send( 200, "text/json", page );
+  page = String();
 }
 
 void onEvents(AsyncEventSourceClient *client)
@@ -268,7 +279,16 @@ bool bDataMode;
 void jsonCallback(int16_t iEvent, uint16_t iName, int iValue, char *psValue)
 {
   if(bKeyGood == false && iName) return;  // only allow key set
-
+/*
+  Serial.print("CB ");
+  Serial.print(iEvent);
+  Serial.print(" ");
+  Serial.print(iName);
+  Serial.print(" ");
+  Serial.print(iValue);
+  Serial.print(" ");
+  Serial.println(psValue);
+*/
   switch(iEvent)
   {
     case 0: // cmd
@@ -322,14 +342,14 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
       if(bRestarted)
       {
         bRestarted = false;
-        client->printf("alert;restarted");
+        client->printf("alert;Restarted");
       }
       client->printf("state;%s", dataJson().c_str());
       client->printf("settings;%s", settingsJson().c_str());
       client->ping();
       break;
     case WS_EVT_DISCONNECT:    //client disconnected
-      bDataMode = false; // turn off numeric display
+      bDataMode = false; // turn off numeric display and frequent updates
       break;
     case WS_EVT_ERROR:    //error was received from the other end
       break;
@@ -347,8 +367,12 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
 
           if(pCmd == NULL || pData == NULL) break;
 
-          bKeyGood = false; // for callback (all commands need a key)
+          uint32_t ip = client->remoteIP();
+
+          bKeyGood = (ip && verifiedIP == ip) ? true:false; // if this IP sent a good key, no need for more
           jsonParse.process(pCmd, pData);
+          if(bKeyGood)
+            verifiedIP = ip;
         }
       }
       break;
@@ -377,17 +401,18 @@ void setup()
   Serial.println();
 
   WiFi.hostname("GDO");
-  wifi.autoConnect("GDO");
+  wifi.autoConnect("GDO", controlPassword);
 
   if(wifi.isCfg())
   {
-    Serial.println("");
+    if ( MDNS.begin ( "gdo", WiFi.localIP() ) )
+      Serial.println ( "MDNS responder started" );
+  }
+  else
+  { Serial.println("");
     Serial.println("WiFi connected");
     Serial.println("IP address: ");
     Serial.println(WiFi.localIP());
-  
-    if ( MDNS.begin ( "gdo", WiFi.localIP() ) )
-      Serial.println ( "MDNS responder started" );
   }
 
 #ifdef USE_SPIFFS
@@ -403,18 +428,16 @@ void setup()
   server.addHandler(&ws);
 
   server.on( "/", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request){
-    parseParams(request);
-//    bDataMode = false;
     if(wifi.isCfg())
       request->send( 200, "text/html", wifi.page() );
-    else
-    {
+  });
+  server.on( "/iot", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request){
+    parseParams(request);
 #ifdef USE_SPIFFS
-      request->send(SPIFFS, "/index.html");
+    request->send(SPIFFS, "/index.html");
 #else
-      request->send_P(200, "text/html", page1);
+    request->send_P(200, "text/html", page1);
 #endif
-    }
   });
   server.on( "/setup.html", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request){
     parseParams(request);
@@ -444,7 +467,7 @@ void setup()
   });
 
   server.onNotFound([](AsyncWebServerRequest *request){
-    request->send(404);
+//    request->send(404);
   });
 
   server.onFileUpload([](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
@@ -481,7 +504,7 @@ void loop()
   bool bNew;
   static bool bReleaseRemote;
 
-  static RunningMedian<uint16_t, 16> rangeMedian[2];
+  static RunningMedian<uint16_t, 24> rangeMedian[2];
 
   MDNS.update();
   if(!wifi.isCfg())
@@ -493,7 +516,7 @@ void loop()
     rangeMedian[1].getMedian(doorVal);
 
     doorVal = 60.374 * pow( map(doorVal, 0, 1024, 0, 2700)/1000.0, -1.16); // convert to CM (https://github.com/guillaume-rico/SharpIR)
-    
+
     bNew = (doorVal < ee.nDoorThresh) ? true:false;
     if(bNew != bDoorOpen)
     {
@@ -607,17 +630,16 @@ void loop()
 //    Serial.println( carVal);
   }
 
-  if(!wifi.isCfg())
-    DrawScreen();
-
   rangeMedian[1].add( analogRead(A0) ); // read current IR sensor value
-}
 
-void DrawScreen()
-{
+  if(wifi.isCfg()) // WiFi cfg will draw it
+    return;
+
+  bool bDraw = (ee.bEnableOLED || displayTimer || bDataMode);
+
   // draw the screen here
   display.clear();
-  if(ee.bEnableOLED || displayTimer || bDataMode)
+  if(bDraw)
   {
     String s = timeFmt(true, true);
     s += "  ";
