@@ -21,7 +21,11 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-// Build with Arduino IDE 1.6.11, esp8266 SDK 2.3.0
+// Build with Arduino IDE 1.8.1, esp8266 SDK 2.3.0
+
+//uncomment to enable Arduino IDE Over The Air update code
+#define OTA_ENABLE
+
 //#define USE_SPIFFS // Uses 7K more program space
 
 #include <Wire.h>
@@ -38,6 +42,10 @@ SOFTWARE.
 #include "PushBullet.h"
 #include "eeMem.h"
 #include <JsonParse.h> // https://github.com/CuriousTech/ESP8266-HVAC/tree/master/Libraries/JsonParse
+#ifdef OTA_ENABLE
+#include <FS.h>
+#include <ArduinoOTA.h>
+#endif
 #ifdef USE_SPIFFS
 #include <FS.h>
 #include <SPIFFSEditor.h>
@@ -87,6 +95,13 @@ uint16_t doorOpenTimer;
 uint16_t doorDelay;
 uint16_t displayTimer;
 
+String sDec(int t) // just 123 to 12.3 string
+{
+  String s = String( t / 10 ) + ".";
+  s += t % 10;
+  return s;
+}
+
 String dataJson()
 {
   String s = "{";
@@ -112,13 +127,14 @@ String settingsJson()
   s += ",\"at\":";  s += ee.alarmTimeout;
   s += ",\"clt\":";  s += ee.closeTimeout;
   s += ",\"delay\":";  s += ee.delayClose;
+  s += ",\"rt\":";  s += ee.rate;
   s += "}";
   return s;
 }
 
 void parseParams(AsyncWebServerRequest *request)
 {
-  char temp[100];
+  char sztemp[100];
   char password[64];
  
   if(request->params() == 0)
@@ -130,8 +146,8 @@ void parseParams(AsyncWebServerRequest *request)
   for ( uint8_t i = 0; i < request->params(); i++ ) {
     AsyncWebParameter* p = request->getParam(i);
 
-    p->value().toCharArray(temp, 100);
-    String s = wifi.urldecode(temp);
+    p->value().toCharArray(sztemp, 100);
+    String s = wifi.urldecode(sztemp);
     switch( p->name().charAt(0)  )
     {
       case 'k': // key
@@ -166,8 +182,8 @@ void parseParams(AsyncWebServerRequest *request)
 
   for ( uint8_t i = 0; i < request->params(); i++ ) {
     AsyncWebParameter* p = request->getParam(i);
-    p->value().toCharArray(temp, 100);
-    String s = wifi.urldecode(temp);
+    p->value().toCharArray(sztemp, 100);
+    String s = wifi.urldecode(sztemp);
     bool which = (tolower(p->name().charAt(1) ) == 'd') ? 1:0;
     int val = s.toInt();
  
@@ -381,6 +397,8 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
 
 void setup()
 {
+  const char hostName[] ="GDO";
+
   pinMode(ESP_LED, OUTPUT);
   pinMode(TRIG, OUTPUT);      // HC-SR04 trigger
   pinMode(ECHO, INPUT);
@@ -400,16 +418,14 @@ void setup()
   Serial.println();
   Serial.println();
 
-  WiFi.hostname("GDO");
-  wifi.autoConnect("GDO", controlPassword);
+  WiFi.hostname(hostName);
+  wifi.autoConnect(hostName, controlPassword);
 
-  if(wifi.isCfg())
+  if(!wifi.isCfg())
   {
-    if ( MDNS.begin ( "gdo", WiFi.localIP() ) )
+    if ( MDNS.begin ( hostName, WiFi.localIP() ) )
       Serial.println ( "MDNS responder started" );
-  }
-  else
-  { Serial.println("");
+    Serial.println("");
     Serial.println("WiFi connected");
     Serial.println("IP address: ");
     Serial.println(WiFi.localIP());
@@ -478,6 +494,30 @@ void setup()
   server.begin();
 
   MDNS.addService("http", "tcp", serverPort);
+#ifdef OTA_ENABLE
+  ArduinoOTA.onStart([]()
+  {
+    String sType = "Begin ";
+    sType += (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "SPIFFS";
+    // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+    events.send(sType.c_str(), "OTA");
+    ws.printfAll("OTA;Begin %s", (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "SPIFFS");
+  });
+  ArduinoOTA.onEnd([]()
+  {
+    events.send("End", "OTA");
+    ws.printfAll("OTA;End");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
+  {
+  });
+  ArduinoOTA.onError([](ota_error_t error)
+  {
+    events.send("Error " + error, "OTA");
+    ws.printfAll("OTA;Error %u", error);
+  });
+  ArduinoOTA.begin();
+#endif
 
   jsonParse.addList(jsonList1);
 
@@ -504,18 +544,23 @@ void loop()
   bool bNew;
   static bool bReleaseRemote;
 
-  static RunningMedian<uint16_t, 24> rangeMedian[2];
+  static RunningMedian<uint16_t, 30> rangeMedian[2];
+  static RunningMedian<float, 20> tempMedian[2];
 
   MDNS.update();
+#ifdef OTA_ENABLE
+  ArduinoOTA.handle();
+#endif
   if(!wifi.isCfg())
     utime.check(ee.tz);
 
   if(sec_save != second()) // only do stuff once per second (loop is maybe 20-30 Hz)
   {
     sec_save = second();
-    rangeMedian[1].getMedian(doorVal);
+    float av;
+    rangeMedian[1].getAverage(2, av);
 
-    doorVal = 60.374 * pow( map(doorVal, 0, 1024, 0, 2700)/1000.0, -1.16); // convert to CM (https://github.com/guillaume-rico/SharpIR)
+    doorVal = 60.374 * pow( map(av, 0, 1024, 0, 2700)/1000.0, -1.16); // convert to CM (https://github.com/guillaume-rico/SharpIR)
 
     bNew = (doorVal < ee.nDoorThresh) ? true:false;
     if(bNew != bDoorOpen)
@@ -526,11 +571,12 @@ void loop()
         sendState();
     }
 
-    rangeMedian[0].getMedian(carVal);
+    rangeMedian[0].getAverage(2, av);
+    carVal = av;
     bNew = (carVal < ee.nCarThresh) ? true:false; // lower is closer
 
     if(carVal < 25) // something is < 25cm away
-      displayTimer = 60; // make the OLED turn on
+      displayTimer = 30; // make the OLED turn on
 
     if(bDataMode && (carVal != oldCarVal || doorVal != oldDoorVal) )
     {
@@ -561,9 +607,12 @@ void loop()
     if(--dht_cnt == 0)
     {
       dht_cnt = 5;
-      float newtemp = dht.toFahrenheit(dht.getTemperature());
-      float newrh = dht.getHumidity();
-      if(dht.getStatus() == DHT::ERROR_NONE && (temp != newtemp || rh != newrh))
+      float newtemp, newrh;
+      tempMedian[0].add( dht.toFahrenheit(dht.getTemperature()) );
+      tempMedian[0].getAverage(2, newtemp);
+      tempMedian[1].add( dht.getHumidity() );
+      tempMedian[1].getAverage(2, newrh);
+      if(dht.getStatus() == DHT::ERROR_NONE && (temp != newtemp))
       {
         temp = newtemp;
         rh = newrh;
@@ -624,10 +673,6 @@ void loop()
     digitalWrite(TRIG, LOW);
     uint16_t cv = (uint16_t)((pulseIn(ECHO, HIGH) / 2) / 29.1); // cm
     rangeMedian[0].add( cv );
-//    Serial.println( cv );
-//    uint16_t carVal;
-//    rangeMedian[0].getMedian(carVal);
-//    Serial.println( carVal);
   }
 
   rangeMedian[1].add( analogRead(A0) ); // read current IR sensor value
