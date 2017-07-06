@@ -21,7 +21,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-// Build with Arduino IDE 1.8.1, esp8266 SDK 2.3.0
+// Build with Arduino IDE 1.8.3, esp8266 SDK 2.3.0
 
 //uncomment to enable Arduino IDE Over The Air update code
 #define OTA_ENABLE
@@ -360,8 +360,9 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
         bRestarted = false;
         client->printf("alert;Restarted");
       }
-      client->printf("state;%s", dataJson().c_str());
-      client->printf("settings;%s", settingsJson().c_str());
+      client->keepAlivePeriod(50);
+      client->printf("state;%s\n", dataJson().c_str());
+      client->printf("settings;%s\n", settingsJson().c_str());
       client->ping();
       break;
     case WS_EVT_DISCONNECT:    //client disconnected
@@ -481,6 +482,9 @@ void setup()
   server.on("/heap", HTTP_GET, [](AsyncWebServerRequest *request){
     request->send(200, "text/plain", String(ESP.getFreeHeap()));
   });
+  server.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request){
+    request->send(404);
+  });
 
   server.onNotFound([](AsyncWebServerRequest *request){
 //    request->send(404);
@@ -495,27 +499,6 @@ void setup()
 
   MDNS.addService("http", "tcp", serverPort);
 #ifdef OTA_ENABLE
-  ArduinoOTA.onStart([]()
-  {
-    String sType = "Begin ";
-    sType += (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "SPIFFS";
-    // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
-    events.send(sType.c_str(), "OTA");
-    ws.printfAll("OTA;Begin %s", (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "SPIFFS");
-  });
-  ArduinoOTA.onEnd([]()
-  {
-    events.send("End", "OTA");
-    ws.printfAll("OTA;End");
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
-  {
-  });
-  ArduinoOTA.onError([](ota_error_t error)
-  {
-    events.send("Error " + error, "OTA");
-    ws.printfAll("OTA;Error %u", error);
-  });
   ArduinoOTA.begin();
 #endif
 
@@ -531,8 +514,10 @@ uint16_t stateTimer = ee.rate;
 
 void sendState()
 {
-  events.send(dataJson().c_str(), "state");
-  ws.printfAll("state;%s", dataJson().c_str());
+  String s = dataJson();
+  events.send(s.c_str(), "state");
+  s = "state;" + s;
+  ws.textAll(s);
   stateTimer = ee.rate;
 }
 
@@ -582,7 +567,7 @@ void loop()
     {
       oldCarVal = carVal;
       oldDoorVal = doorVal;
-      ws.printfAll("state;%s", dataJson().c_str());
+      ws.textAll(String("state;") + dataJson().c_str());
     }
 
     if(bNew != bCarIn)
