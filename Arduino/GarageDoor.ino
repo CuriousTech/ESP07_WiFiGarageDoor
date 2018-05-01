@@ -21,7 +21,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-// Build with Arduino IDE 1.8.3, esp8266 SDK 2.3.0
+// Build with Arduino IDE 1.8.5, esp8266 SDK 2.4.1
 
 //uncomment to enable Arduino IDE Over The Air update code
 #define OTA_ENABLE
@@ -132,6 +132,16 @@ String settingsJson()
   return s;
 }
 
+void displayStart()
+{
+  if(ee.bEnableOLED == false && displayTimer == 0)
+  {
+    display.init();
+    display.flipScreenVertically();
+  }
+  displayTimer = 30;
+}
+
 void parseParams(AsyncWebServerRequest *request)
 {
   char sztemp[100];
@@ -202,7 +212,7 @@ void parseParams(AsyncWebServerRequest *request)
           ee.tempCal = val;
           break;
       case 'D': // Door (pulse the output)
-          displayTimer = 30;
+          displayStart();
           if(val) doorDelay = ee.delayClose;
           else bPulseRemote = true;
           break;
@@ -265,7 +275,7 @@ void handleS(AsyncWebServerRequest *request)
 
 void onEvents(AsyncEventSourceClient *client)
 {
-//  client->send(":ok", NULL, millis(), 1000);
+  client->send(":ok", NULL, millis(), 1000);
   static bool rebooted = true;
   if(rebooted)
   {
@@ -330,7 +340,7 @@ void jsonCallback(int16_t iEvent, uint16_t iName, int iValue, char *psValue)
           ee.nCarThresh = iValue;
           break;
         case 6: // Door
-          displayTimer = 30;
+          displayStart();
           if(iValue) doorDelay = ee.delayClose;
           else bPulseRemote = true; // start output pulse
           break;
@@ -351,6 +361,7 @@ void jsonCallback(int16_t iEvent, uint16_t iName, int iValue, char *psValue)
 void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventType type, void * arg, uint8_t *data, size_t len)
 {  //Handle WebSocket event
   static bool bRestarted = true;
+  String s;
 
   switch(type)
   {
@@ -358,11 +369,13 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
       if(bRestarted)
       {
         bRestarted = false;
-        client->printf("alert;Restarted");
+        client->text("alert;Restarted");
       }
       client->keepAlivePeriod(50);
-      client->printf("state;%s\n", dataJson().c_str());
-      client->printf("settings;%s\n", settingsJson().c_str());
+      s = String("state;")  + dataJson().c_str() + "\n";
+      client->text(s);
+      s = String("settings;") + settingsJson().c_str() + "\n";
+      client->text(s);
       client->ping();
       break;
     case WS_EVT_DISCONNECT:    //client disconnected
@@ -410,7 +423,7 @@ void setup()
 
   // initialize dispaly
   display.init();
-
+  display.flipScreenVertically();
   display.clear();
   display.display();
 
@@ -437,12 +450,12 @@ void setup()
   server.addHandler(new SPIFFSEditor("admin", controlPassword));
 #endif
 
-  // attach AsyncEventSource
-  events.onConnect(onEvents);
-  server.addHandler(&events);
   // attach AsyncWebSocket
   ws.onEvent(onWsEvent);
   server.addHandler(&ws);
+  // attach AsyncEventSource
+  events.onConnect(onEvents);
+  server.addHandler(&events);
 
   server.on( "/", HTTP_GET | HTTP_POST, [](AsyncWebServerRequest *request){
     if(wifi.isCfg())
@@ -483,7 +496,9 @@ void setup()
     request->send(200, "text/plain", String(ESP.getFreeHeap()));
   });
   server.on("/favicon.ico", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(404);
+    AsyncWebServerResponse *response = request->beginResponse_P(200, "image/x-icon", favicon, sizeof(favicon));
+    response->addHeader("Content-Encoding", "gzip");
+    request->send(response);
   });
 
   server.onNotFound([](AsyncWebServerRequest *request){
@@ -550,10 +565,10 @@ void loop()
     bNew = (doorVal < ee.nDoorThresh) ? true:false;
     if(bNew != bDoorOpen)
     {
-        displayTimer = 60; // make the OLED turn on
-        bDoorOpen = bNew;
-        doorOpenTimer = bDoorOpen ? ee.alarmTimeout : 0;
-        sendState();
+      displayStart();
+      bDoorOpen = bNew;
+      doorOpenTimer = bDoorOpen ? ee.alarmTimeout : 0;
+      sendState();
     }
 
     rangeMedian[0].getAverage(2, av);
@@ -561,8 +576,9 @@ void loop()
     bNew = (carVal < ee.nCarThresh) ? true:false; // lower is closer
 
     if(carVal < 25) // something is < 25cm away
-      displayTimer = 30; // make the OLED turn on
-
+    {
+      displayStart();
+    }
     if(bDataMode && (carVal != oldCarVal || doorVal != oldDoorVal) )
     {
       oldCarVal = carVal;
@@ -574,7 +590,9 @@ void loop()
     {
       bCarIn = bNew;
       if(bCarIn)
-        displayTimer = 60; // car just pulled in
+      {
+        displayStart();
+      }
       sendState();
     }
 
