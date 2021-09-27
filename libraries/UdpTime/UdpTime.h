@@ -11,6 +11,7 @@ public:
   bool check(int8_t tz);
   void DST(void);
   uint8_t getDST(void);
+  void set(unsigned long epoch, int8_t tz);
 private:
 #define NTP_PACKET_SIZE  48 // NTP time stamp is in the first 48 bytes of the message
   byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
@@ -21,3 +22,4 @@ private:
 };
 
 #endif // UDPTIME_H
+
