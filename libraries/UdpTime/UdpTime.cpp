@@ -115,14 +115,22 @@ bool UdpTime::check(int8_t tz)
   lowWord = word(packetBuffer[46], packetBuffer[47]);
   unsigned long d = (highWord << 16 | lowWord) / 4295000; // convert to ms
   delay(d); // delay to next second (meh)
+
+  set(epoch, tz);
   setTime(epoch);
   DST(); // check the DST and reset clock
   timeZoneOffset = 3600 * (tz + _dst);
   epoch = secsSince1900 - seventyYears + timeZoneOffset + 1; // bump 1 second
   setTime(epoch);
 
-//  Serial.print("Time ");
-//  Serial.println(timeFmt(true, true));
   _bWaiting = false;
   return true;
+}
+
+void UdpTime::set(unsigned long epoch, int8_t tz)
+{
+  long timeZoneOffset = 3600 * (tz + _dst);
+  setTime(epoch + timeZoneOffset);
+  DST(); // check the DST and reset clock
+  setTime(epoch + timeZoneOffset);
 }
