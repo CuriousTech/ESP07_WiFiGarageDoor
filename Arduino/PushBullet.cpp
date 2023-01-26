@@ -6,7 +6,7 @@
 */
 
 #include "PushBullet.h"
-
+#include "jsonstring.h"
 const char host[] = "api.pushbullet.com";
 const char url[] = "/v2/pushes";
 
@@ -31,7 +31,7 @@ bool PushBullet::send(const char *pTitle, String sBody, const char *pToken)
   if(m_ac.connected())
     m_ac.stop();
 
-  return m_ac.connect( host, 443, true);// set ASYNC_TCP_SSL_ENABLED to 1 in ESPAsyncTCP/src/async_config.h
+  return m_ac.connect( host, 443);//, true);// set ASYNC_TCP_SSL_ENABLED to 1 in ESPAsyncTCP/src/async_config.h
 }
   
 void PushBullet::_onDisconnect(AsyncClient* client)
@@ -56,11 +56,11 @@ void PushBullet::_onConnect(AsyncClient* client)
 {
   (void)client;
 
-  String data = "{\"type\": \"note\", \"title\": \"";
-  data += m_szTitle;
-  data += "\", \"body\": \"";
-  data += m_szBody;
-  data += "\"}";
+  jsonString js;
+  js.Var("type", "note");
+  js.Var("title", m_szTitle);
+  js.Var("body", m_szBody);
+  String data = js.Close();
 
   String s = String("POST ");
   s += url;
