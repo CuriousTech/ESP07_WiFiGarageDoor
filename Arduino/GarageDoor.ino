@@ -93,7 +93,7 @@ AsyncWebSocket ws("/ws"); // access at ws://[esp ip]/ws
 
 PushBullet pb;
 
-void jsonCallback(int16_t iEvent, uint16_t iName, int iValue, char *psValue);
+void jsonCallback(int16_t iName, int iValue, char *psValue);
 JsonParse jsonParse(jsonCallback);
 void jsonPushCallback(int16_t iEvent, uint16_t iName, int iValue, char *psValue);
 JsonClient jsonPush(jsonPushCallback);
@@ -339,7 +339,7 @@ String timeFmt(bool do_sec, bool do_M)
   return r;
 }
 
-const char *jsonList1[] = { "cmd",
+const char *jsonList1[] = {
   "key",
   "doorDelay", // close/open delay
   "closetimeout", // close timeout
@@ -356,54 +356,50 @@ const char *jsonList1[] = { "cmd",
 bool bKeyGood;
 bool bDataMode;
 
-void jsonCallback(int16_t iEvent, uint16_t iName, int iValue, char *psValue)
+void jsonCallback(int16_t iName, int iValue, char *psValue)
 {
-  if(bKeyGood == false && iName) return;  // only allow key set
+  if(bKeyGood == false && iName > 0)
+    return;  // only allow key set
 
-  switch(iEvent)
+  switch(iName)
   {
-    case 0: // cmd
-      switch(iName)
-      {
-        case 0: // key
-          if(!strcmp(psValue, ee.szControlPassword)) // first item must be key
-            bKeyGood = true;
-          break;
-        case 1: // doorDelay
-          ee.delayClose = iValue;
-          break;
-        case 2: // closeTimeout
-          ee.closeTimeout = iValue;
-          break;
-        case 3:
-          ee.alarmTimeout = iValue;
-          break;
-        case 4: // threshDoor
-          ee.nDoorThresh = iValue;
-          break;
-        case 5: // threshCar
-          ee.nCarThresh = iValue;
-          break;
-        case 6: // Door
-          displayStart();
-          if(iValue) doorDelay = ee.delayClose;
-          else bPulseRemote = true; // start output pulse
-          break;
-        case 7: // tempOffset
-          ee.tempCal = iValue;
-          break;
-        case 8: // OLED
-          ee.bEnableOLED = iValue ? true:false;
-          break;
-        case 9: // TZ
-          ee.tz = iValue;
-          break;
-      }
+    case 0: // key
+      if(!strcmp(psValue, ee.szControlPassword)) // first item must be key
+        bKeyGood = true;
+      break;
+    case 1: // doorDelay
+      ee.delayClose = iValue;
+      break;
+    case 2: // closeTimeout
+      ee.closeTimeout = iValue;
+      break;
+    case 3:
+      ee.alarmTimeout = iValue;
+      break;
+    case 4: // threshDoor
+      ee.nDoorThresh = iValue;
+      break;
+    case 5: // threshCar
+      ee.nCarThresh = iValue;
+      break;
+    case 6: // Door
+      displayStart();
+      if(iValue) doorDelay = ee.delayClose;
+      else bPulseRemote = true; // start output pulse
+      break;
+    case 7: // tempOffset
+      ee.tempCal = iValue;
+      break;
+    case 8: // OLED
+      ee.bEnableOLED = iValue ? true:false;
+      break;
+    case 9: // TZ
+      ee.tz = iValue;
       break;
   }
 }
 
-const char *jsonListPush[] = { "time",
+const char *jsonListPush[] = { "",
   "time", // 0
   NULL
 };
@@ -478,7 +474,7 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
       if(bRestarted)
       {
         bRestarted = false;
-        client->text("alert;Restarted");
+        client->text( "{\"cmd\":\"alert\",\"text\":\"Restarted\"}" );
       }
       client->keepAlivePeriod(50);
       client->text( dataJson() );
@@ -498,15 +494,10 @@ void onWsEvent(AsyncWebSocket * server, AsyncWebSocketClient * client, AwsEventT
         if(info->opcode == WS_TEXT){
           data[len] = 0;
 
-          char *pCmd = strtok((char *)data, ";"); // assume format is "name;{json:x}"
-          char *pData = strtok(NULL, "");
-
-          if(pCmd == NULL || pData == NULL) break;
-
           uint32_t ip = client->remoteIP();
 
           bKeyGood = (ip && verifiedIP == ip) ? true:false; // if this IP sent a good key, no need for more
-          jsonParse.process(pCmd, pData);
+          jsonParse.process((char*)data);
           if(bKeyGood)
             verifiedIP = ip;
         }
@@ -628,7 +619,7 @@ void setup()
   ArduinoOTA.begin();
 #endif
 
-  jsonParse.addList(jsonList1);
+  jsonParse.setList(jsonList1);
   digitalWrite(ESP_LED, HIGH);
   if(ee.rate == 0) ee.rate = 60;
 }
@@ -824,7 +815,7 @@ void loop()
       if(--doorOpenTimer == 0)
       {
         CallHost(Reason_Alert, "Door not closed");
-        ws.textAll("alert;Door not closed");
+        ws.textAll( "{\"cmd\":\"alert\",\"text\":\"Door not closed\"}" );
         pb.send("GDO", "Door not closed", ee.pbToken);
       }
     }
