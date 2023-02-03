@@ -1,5 +1,3 @@
-// Helper class for json strings
-
 class jsonString
 {
 public:
@@ -92,6 +90,23 @@ public:
     m_cnt++;
   }
 
+  void Array(const char *key, String sVal[], int n)
+  {
+    if(m_cnt) s += ",";
+    s += "\"";
+    s += key;
+    s += "\":[";
+    for(int i = 0; i < n; i++)
+    {
+      if(i) s += ",";
+      s += "\"";
+      s += sVal[i];
+      s += "\"";
+    }
+    s += "]";
+    m_cnt++;
+  }
+
   void Array(const char *key, uint16_t iVal[], int n)
   {
     if(m_cnt) s += ",";
@@ -117,42 +132,6 @@ public:
     {
       if(i) s += ",";
       s += iVal[i];
-    }
-    s += "]";
-    m_cnt++;
-  }
-
- // custom arrays for waterbed
-  void Array(const char *key, Sched sVal[], int n)
-  {
-    if(m_cnt) s += ",";
-    s += "\"";
-    s += key;
-    s += "\":[";
-
-    for(int i = 0; i < n; i++)
-    {
-      if(i) s += ",";
-      s += "[\"";  s += sVal[i].name; s += "\",";
-      s += sVal[i].timeSch;
-      s += ","; s += String( (float)sVal[i].setTemp/10, 1 );
-      s += ","; s += String( (float)sVal[i].thresh/10,1 );
-      s += "]";
-    }
-    s += "]";
-    m_cnt++;
-  }
-
-  void ArrayCost(const char *key, uint16_t iVal[], int n)
-  {
-    if(m_cnt) s += ",";
-    s += "\"";
-    s += key;
-    s += "\":[";
-    for(int i = 0; i < n; i++)
-    {
-      if(i) s += ",";
-      s += (float)iVal[i]/100;
     }
     s += "]";
     m_cnt++;
