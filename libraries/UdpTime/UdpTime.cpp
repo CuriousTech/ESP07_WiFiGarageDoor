@@ -10,7 +10,6 @@ void UdpTime::start()
 {
   if(_bWaiting)
     return;
-//  Serial.println("Udp start");
   Udp.begin(2390);
   // set all bytes in the buffer to 0
   memset(packetBuffer, 0, NTP_PACKET_SIZE);
@@ -93,7 +92,6 @@ bool UdpTime::check(int8_t tz)
      }
     return false;
   }
-//  Serial.println("checkUdpTime good");
 
   // We've received a packet, read the data from it
   Udp.read(packetBuffer, NTP_PACKET_SIZE); // read the packet into the buffer
@@ -107,7 +105,8 @@ bool UdpTime::check(int8_t tz)
   unsigned long secsSince1900 = highWord << 16 | lowWord;
   // Unix time starts on Jan 1 1970. In seconds, that's 2208988800:
   const unsigned long seventyYears = 2208988800UL;
-  long timeZoneOffset = 3600 * (tz + _dst);
+  long timeZoneOffset = 0;
+  if(tz) timeZoneOffset = 3600 * (tz + _dst); // No TZ = use GMT
   unsigned long epoch = secsSince1900 - seventyYears + timeZoneOffset + 1; // bump 1 second
 
   // Grab the fraction
@@ -116,21 +115,15 @@ bool UdpTime::check(int8_t tz)
   unsigned long d = (highWord << 16 | lowWord) / 4295000; // convert to ms
   delay(d); // delay to next second (meh)
 
-  set(epoch, tz);
   setTime(epoch);
-  DST(); // check the DST and reset clock
-  timeZoneOffset = 3600 * (tz + _dst);
+  if(tz)
+  {
+	DST(); // check the DST and reset clock
+	timeZoneOffset = 3600 * (tz + _dst);
+  }
   epoch = secsSince1900 - seventyYears + timeZoneOffset + 1; // bump 1 second
   setTime(epoch);
 
   _bWaiting = false;
   return true;
-}
-
-void UdpTime::set(unsigned long epoch, int8_t tz)
-{
-  long timeZoneOffset = 3600 * (tz + _dst);
-  setTime(epoch + timeZoneOffset);
-  DST(); // check the DST and reset clock
-  setTime(epoch + timeZoneOffset);
 }
